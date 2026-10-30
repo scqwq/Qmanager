@@ -1,0 +1,20 @@
+# Personal inputs and generated artifacts must remain outside the repository.
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.qqarc
+*.partial
+*.log
+password.txt
+*.key
+.private/
+.local/
+cache/
+tmp/
+node_modules/
+frontend/dist/
+build/bin/
+build/releases/
+*.syso
+frontend/wailsjs/

@@ -1,0 +1,20 @@
+{
+  "name": "qman-desktop",
+  "private": true,
+  "version": "0.2.1-dev",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vue-tsc --noEmit && vite build"
+  },
+  "dependencies": {
+    "vue": "3.5.44"
+  },
+  "devDependencies": {
+    "@babel/types": "7.26.0",
+    "@vitejs/plugin-vue": "6.0.0",
+    "typescript": "5.6.3",
+    "vite": "7.3.7",
+    "vue-tsc": "2.1.0"
+  }
+}

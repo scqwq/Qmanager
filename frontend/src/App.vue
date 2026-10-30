@@ -1,0 +1,104 @@
+<script setup lang="ts">
+import {computed,onMounted,onUnmounted,ref,watch} from 'vue'
+import {api,hasDesktop,type Item,type Page,type State,type Bucket,type Estimate,type History,type Filter} from './api'
+const state=ref<State>({phase:'idle',mode:'source',source:null,sources:[],scanned:0,bytes:0,report:null,watching:false,coverage:'',revision:0,error:'',message:'',backup:null,excluded:0,cached:false,last_full_scan:'',reconcile_seconds:120,index_bytes:0})
+const page=ref<Page>({items:[],total:0,bytes:0}),buckets=ref<Bucket[]>([])
+const kind=ref(''),month=ref(''),role=ref(''),status=ref(''),size=ref(''),offset=ref(0),view=ref('source'),from=ref(''),to=ref('')
+const error=ref(''),notice=ref(''),action=ref(false),desktop=ref(hasDesktop()),listing=ref(false),selected=ref<Item|null>(null)
+const mediaURL=ref(''),playError=ref(false),history=ref<History[]>([]),failed=ref(new Set<string>()),estimate=ref<Estimate|null>(null),backupFilter=ref<Filter|null>(null),renaming=ref(false),sourceName=ref('')
+let timer:ReturnType<typeof setInterval>|undefined,polling=false,generation=0,disposed=false
+const busy=computed(()=>action.value||['backup','verifying','discovering'].includes(state.value.phase))
+const scanning=computed(()=>state.value.phase==='scanning')
+const kinds=[{id:'image',name:'图片',symbol:'▧'},{id:'video',name:'视频',symbol:'▷'},{id:'emoji',name:'收到的表情',symbol:'☺'},{id:'voice',name:'语音',symbol:'≋'}]
+const roles:Record<string,string>={original:'原件',preview:'缩略图',cover:'视频封面',temporary:'临时资源',unknown:'角色未知'}
+const statuses:Record<string,string>={recognized:'已识别文件头',unknown:'未知格式',empty:'零字节',invalid_header:'文件头损坏或不支持',unreadable:'无法读取',changed:'扫描时发生变化'}
+const methods:Record<string,string>={baseline:'扫描前已存在',live_event:'监控中首次发现',rescan_after_gap:'中断或核对扫描后发现',user_reported:'用户标注'}
+const issues:Record<string,string>={directory_limit:'达到目录上限',directory_unreadable_or_link:'目录不可读或含链接',link_skipped:'已跳过链接',stat_failed:'无法读取文件信息',non_regular_skipped:'已跳过特殊文件',file_limit:'达到文件上限',unreadable:'无法读取',changed:'扫描期间发生变化',directory_read_failed:'目录未完整读取'}
+const eventNames:Record<string,string>={seen:'首次记录',stable:'通过稳定性检查',superseded:'被新版本替换',rename:'文件位置变化',missing:'核对时缺失'}
+const fmtTime=(v:string|null|undefined)=>v&&!v.startsWith('0001-')?new Date(v).toLocaleString():'未知'
+const bytes=(v:number)=>{if(!v)return '0 B';const u=['B','KiB','MiB','GiB','TiB'];const i=Math.min(4,Math.floor(Math.log(v)/Math.log(1024)));return `${(v/1024**i).toFixed(i?1:0)} ${u[i]}`}
+const name=(i:Item)=>i.relative_path.split('/').at(-1)??i.relative_path
+const kindName=(id:string)=>kinds.find(k=>k.id===id)?.name??id
+const symbol=(id:string)=>kinds.find(k=>k.id===id)?.symbol??'▧'
+const sourceLabel=(s:{name:string;root:string})=>{const parts=s.root.split(String.fromCharCode(92)).join('/').split('/');const at=parts.map(p=>p.toLowerCase()).lastIndexOf('nt_data');const account=at>=2&&parts[at-1].toLowerCase()==='nt_qq'?parts[at-2]:'';return account&&s.name!==account?`${s.name} · ${account}`:s.name}
+const thumb=(i:Item)=>`/media/thumbnail/${encodeURIComponent(i.id)}`
+const failPreview=(id:string)=>{failed.value=new Set([...failed.value,id])}
+const title=computed(()=>month.value?`${month.value==='__unknown__'?'月份未知':month.value} · ${kind.value?kindName(kind.value):'全部媒体'}`:kind.value?kindName(kind.value):'全部媒体')
+const months=computed(()=>{const m=new Map<string,number>();for(const b of buckets.value){if(kind.value&&b.kind!==kind.value)continue;m.set(b.month,(m.get(b.month)??0)+b.files)}return [...m].sort(([a],[b])=>b.localeCompare(a))})
+const totals=computed(()=>kinds.map(k=>{const bs=(state.value.report?.buckets??[]).filter(b=>b.kind===k.id);return {...k,files:bs.reduce((s,b)=>s+b.files,0),bytes:bs.reduce((s,b)=>s+b.bytes,0)}}))
+function filter():Filter{return {kind:kind.value,month:month.value,role:role.value,status:status.value,min_bytes:Number(size.value)||0,max_bytes:0,offset:offset.value,limit:60,view:view.value,from:from.value,to:to.value}}
+async function load(){const id=++generation;const source=state.value.source?.id;try{const [p,bs]=await Promise.all([api().GetPage(filter()),api().GetBuckets(view.value)]);if(id===generation&&!disposed&&source===state.value.source?.id){page.value=p;buckets.value=bs}}catch(e){error.value=String(e)}}
+async function poll(){if(polling||!hasDesktop()||disposed)return;polling=true;try{const revision=state.value.revision;state.value=await api().GetState();if(revision!==state.value.revision)await load();void api().UIReady()}catch(e){error.value=String(e)}finally{polling=false}}
+async function run(fn:()=>Promise<unknown>){action.value=true;generation++;error.value='';notice.value='';try{await fn();state.value=await api().GetState();await load()}catch(e){error.value=String(e)}finally{action.value=false}}
+const choose=()=>run(async()=>{const path=await api().ChooseSource();if(path){failed.value=new Set();selected.value=null;month.value='';offset.value=0}})
+const start=()=>run(async()=>{failed.value=new Set();await api().StartScan()})
+const stop=()=>run(()=>api().StopWatch())
+const cancel=()=>run(()=>api().CancelScan())
+const openBackup=()=>run(async()=>{await api().OpenBackup();failed.value=new Set();selected.value=null;month.value='';offset.value=0})
+const switchSource=(event:Event)=>{const id=(event.target as HTMLSelectElement).value;if(id)void run(async()=>{await api().SwitchSource(id);failed.value=new Set();selected.value=null;month.value='';offset.value=0})}
+async function prepareBackup(){if(from.value&&to.value&&from.value>to.value){error.value='开始日期不能晚于结束日期';return}await run(async()=>{backupFilter.value={...filter(),offset:0};estimate.value=await api().GetEstimate(backupFilter.value)})}
+async function backup(){if(!backupFilter.value)return;const f=backupFilter.value;estimate.value=null;await run(()=>api().CreateBackup(f))}
+async function exportIndex(){await run(async()=>{const path=await api().ExportIndex();if(path)notice.value=`观察索引已备份：${path}`})}
+async function rename(){await run(()=>api().RenameSource(sourceName.value));renaming.value=false}
+async function inspect(item:Item){selected.value=item;mediaURL.value='';playError.value=false;history.value=[];try{const h=await api().GetHistory(item.id);if(selected.value?.id===item.id)history.value=h}catch{};if(item.format==='iso-bmff'||item.preview){try{const url=await api().GetMediaURL(item.id);if(selected.value?.id===item.id)mediaURL.value=url}catch{playError.value=true}}}
+function closeDetail(){selected.value=null;mediaURL.value='';history.value=[]}
+function onKey(e:KeyboardEvent){if(e.key==='Escape'){closeDetail();estimate.value=null;renaming.value=false}}
+watch([kind,month,role,status,size,view,from,to],()=>{offset.value=0;if(desktop.value)void load()})
+watch(view,()=>{month.value='';from.value='';to.value=''})
+watch(offset,()=>{void load()})
+onMounted(()=>{desktop.value=hasDesktop();void poll();timer=setInterval(()=>void poll(),800);window.addEventListener('keydown',onKey)})
+onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventListener('keydown',onKey)})
+</script>
+
+<template>
+<div class="shell">
+ <aside class="sidebar">
+  <div class="brand"><span class="brand-icon">Q</span><div>Qman<small>QQ 本地媒体管理</small></div></div>
+  <div class="nav-label">账号 / 媒体来源</div>
+  <select class="source-select" aria-label="切换媒体来源" :value="state.mode==='source'?state.source?.id:''" :disabled="busy" @change="switchSource"><option value="" disabled>切换账号 / 媒体来源</option><option v-for="s in state.sources" :key="s.id" :value="s.id" :title="s.root">{{sourceLabel(s)}}</option></select>
+  <button class="add-source" :disabled="!desktop||busy" @click="choose">＋ 发现账号目录</button>
+  <div class="nav-label">媒体库</div>
+  <button class="nav-item" :class="{active:!kind}" @click="kind='';month=''">▦ <span>全部媒体</span><em>{{state.report?.files??'—'}}</em></button>
+  <button v-for="k in kinds" :key="k.id" class="nav-item" :class="{active:kind===k.id}" @click="kind=k.id;month=''">{{k.symbol}} <span>{{k.name}}</span></button>
+  <div class="nav-label month-heading">{{view==='observed'?'观察月份':'来源月份'}} <span>{{months.length}}</span></div>
+  <div class="month-list"><button class="month-item" :class="{active:!month}" @click="month=''">全部月份</button><button v-for="[m,count] in months" :key="m" class="month-item" :class="{active:month===(m||'__unknown__')}" @click="month=m||'__unknown__'">{{m||'来源月份未知'}}<span>{{count}}</span></button><p v-if="!months.length" class="sidebar-hint">扫描后在这里查看月份。<br/>初次扫描旧文件不算新增。</p></div>
+  <div class="sidebar-footer"><span class="privacy-dot"></span>本机处理 · 源文件只读<small>0.2.1 · 只读与缓存</small></div>
+ </aside>
+ <main>
+  <header class="topbar"><span>我的媒体库 <span class="breadcrumb">/ {{state.mode==='backup'?'独立备份':title}}</span></span><div class="header-actions"><button :disabled="!desktop||busy" @click="openBackup">打开并校验备份</button><button :disabled="!desktop||busy" @click="exportIndex">备份观察索引</button></div></header>
+  <div class="workspace">
+   <div class="page-heading"><div><div class="eyebrow">LOCAL MEDIA LIBRARY</div><h1>{{title}}</h1><p>按月份查找，让本地媒体井然有序。</p></div><button class="primary" :disabled="!desktop||busy" @click="choose">＋ 选择外层文件夹</button></div>
+   <div v-if="!desktop" class="notice">请使用 Qman 桌面程序管理本地媒体。浏览器预览不读取本机目录。</div>
+   <div v-if="error||state.error" class="notice error" role="alert">{{error||state.error}}</div>
+   <div v-if="notice||state.message" class="notice success" role="status">{{notice||state.message}}<p v-if="state.backup">{{state.backup.path}}<br/>{{state.backup.files}} 个文件，{{state.backup.unique_objects}} 个唯一对象，{{state.backup.excluded}} 项未纳入（原因保存在清单）。</p></div>
+   <section v-if="!state.source" class="empty-card"><div class="folder-art"><svg viewBox="0 0 140 110" aria-hidden="true"><path d="M19 28h40l12 13h53v55H19z" fill="#b9dace"/><path d="M17 40h110l-13 58H28z" fill="#d8ebe3"/><rect x="48" y="16" width="47" height="55" rx="6" fill="#fff" stroke="#9bbdad"/><path d="m53 58 12-14 10 9 9-13 6 18z" fill="#64a68e"/><circle cx="62" cy="31" r="5" fill="#c4ddbc"/><path d="M17 53h110l-13 45H28z" fill="#b4d6c7"/></svg></div><h2>从 QQ 文件夹开始</h2><p>选择 Tencent Files 或迁移后的外层文件夹，自动发现账号。<br/>也支持直接选择 nt_data 或单独的媒体目录。</p><button class="primary" :disabled="!desktop||busy" @click="choose">选择文件夹</button><div class="empty-notes"><span>✓ 无需登录 QQ</span><span>✓ 不修改原文件</span><span>✓ 不上传媒体</span></div></section>
+   <template v-else>
+    <div v-if="state.discovery" class="discovery-summary">已发现 {{state.discovery.candidates.length}} 个账号 / 媒体来源，未扫描其他账号的媒体内容。<br/>检索范围：{{state.discovery.root}}<span v-if="state.discovery.linked">（已解析所选链接）</span><span v-if="!state.discovery.complete"> · 存在跳过项或达到发现边界</span></div>
+    <section class="source-panel"><div class="source-icon">▱</div><div class="source-details"><strong>{{state.mode==='backup'?'已验证的独立备份':state.source.name}}</strong><button v-if="state.mode==='source'" class="text-button" @click="renaming=!renaming;sourceName=state.source.name">重命名来源</button><p :title="state.source.resolved">{{state.source.resolved}}</p><small v-if="state.source.linked">上方为解析后的真实路径，请核对后再扫描。</small><div v-if="renaming" class="rename-row"><input v-model="sourceName" maxlength="60" aria-label="来源名称"/><button class="secondary" @click="rename">保存名称</button></div></div><template v-if="state.mode==='source'"><button v-if="state.watching" class="secondary" :disabled="busy" @click="stop">暂停监控</button><button class="primary" :disabled="busy||scanning" @click="start">{{state.report?'继续监控 / 补充索引':'首次建立索引并监控'}}</button></template></section>
+    <div v-if="scanning||['backup','verifying','discovering'].includes(state.phase)" class="scan-progress" role="status"><div class="indeterminate"></div><span>{{state.phase==='backup'?'正在复制并校验备份':state.phase==='verifying'?'正在独立校验备份':state.phase==='discovering'?'正在发现账号目录':'正在后台更新索引'}} · {{state.scanned.toLocaleString()}} 个文件 · {{bytes(state.bytes)}}</span><button @click="cancel">取消任务</button></div>
+    <div v-if="state.coverage" class="monitor-line"><span :class="['privacy-dot',{stopped:!state.watching}]"></span>{{state.coverage}}<span v-if="state.watching">稳定性检查需要至少三次观察，不代表 QQ 确认下载完成。</span></div>
+    <div class="stats-grid"><button v-for="t in totals" :key="t.id" class="stat-card" :class="{chosen:kind===t.id}" @click="kind=kind===t.id?'':t.id;month=''"><span class="stat-symbol">{{t.symbol}}</span><span class="stat-copy">{{t.name}}<strong>{{state.report?bytes(t.bytes):'—'}}</strong><small>{{state.report?t.files.toLocaleString():'—'}} 个文件</small></span></button></div>
+    <template v-if="state.report">
+     <div v-if="state.mode==='source'" class="cache-summary"><strong>{{state.cached?'本地索引已加载':'索引已更新'}}</strong><span>上次完整核对：{{fmtTime(state.last_full_scan)}} · 每 2 分钟补漏 · 索引 {{bytes(state.index_bytes)}}</span><span v-if="!state.cached">本次复用 {{state.report.reused}} 个未变文件 · 更新 {{state.report.indexed_updates}} 项</span><small v-if="state.cached">当前是上次保存的清单；源断开或文件变化时，预览仍需能读取原文件。</small></div>
+     <div class="scan-note" :class="{warning:!state.report.complete}"><span>{{state.cached?'已载入本地索引，源文件尚未核对':state.report.complete?(state.report.partial?'受影响路径已增量更新':'完整核对已完成'):'核对存在缺口，保留已有索引'}}</span><span>{{fmtTime(state.report.finished_at)}} · {{state.report.issue_count}} 项扫描问题</span></div>
+     <section class="library-panel">
+      <div class="library-toolbar"><div class="tabs"><button :class="{active:view==='source'}" @click="view='source'">来源月份</button><button :class="{active:view==='observed'}" @click="view='observed'">新增观察日期</button></div><button v-if="state.mode==='source'" class="primary" :disabled="busy" @click="prepareBackup">备份当前筛选</button><span v-else class="backup-label">已校验 · {{state.excluded}} 项未含媒体</span></div>
+      <div v-if="view==='observed'" class="datebar"><label>首次发现日期 <input type="date" v-model="from" aria-label="开始日期"/> — <input type="date" v-model="to" aria-label="结束日期"/></label><span>包含结束日；基线旧文件不列为新增，补扫不代表下载时间。</span></div>
+      <div class="filterbar"><select aria-label="来源角色" v-model="role"><option value="">全部角色</option><option v-for="(label,value) in roles" :key="value" :value="value">{{label}}</option></select><select aria-label="文件状态" v-model="status"><option value="">全部状态</option><option v-for="(label,value) in statuses" :key="value" :value="value">{{label}}</option></select><select aria-label="最小文件大小" v-model="size"><option value="">全部大小</option><option value="1048576">至少 1 MiB</option><option value="10485760">至少 10 MiB</option><option value="104857600">至少 100 MiB</option></select><div class="view-toggle"><button :class="{chosen:!listing}" @click="listing=false" aria-label="网格视图">▦</button><button :class="{chosen:listing}" @click="listing=true" aria-label="列表视图">☷</button></div></div>
+      <div class="result-caption">{{page.total.toLocaleString()}} 个文件 · 逻辑大小 {{bytes(page.bytes)}}<span>包含原件、预览、临时资源，不是可释放空间</span></div>
+      <div v-if="!page.items.length" class="no-results">当前条件下没有文件。</div>
+      <div v-else class="media-grid" :class="{listing}"><button v-for="item in page.items" :key="item.id" class="media-card" @click="inspect(item)"><div class="media-preview"><img v-if="item.preview&&!failed.has(item.id)" :src="thumb(item)" alt="静态缩略预览" loading="lazy" @error="failPreview(item.id)"/><div v-else class="media-placeholder"><span>{{symbol(item.kind)}}</span><small>{{failed.has(item.id)?'预览失败':item.format==='iso-bmff'?'视频原件 · 点击尝试播放':item.format==='silk'?'SILK · 原文件保留':item.status==='recognized'?'暂不支持预览':statuses[item.status]}}</small></div><span class="role-tag">{{roles[item.role]}}</span></div><div class="media-info"><strong :title="item.relative_path">{{name(item)}}</strong><div><span>{{item.source_month||'月份未知'}} · {{item.format.toUpperCase()}}</span><span>{{bytes(item.bytes)}}</span></div><small :class="['item-state',{pending:item.stability!=='stable_heuristic'}]">{{item.stability==='stable_heuristic'?'通过稳定性检查':'待稳定或不支持'}} · {{methods[item.observation_method]??'时间证据未知'}}</small></div></button></div>
+      <div class="pagination"><span>每页最多 60 个文件</span><button class="secondary" :disabled="offset===0" @click="offset=Math.max(0,offset-60)">上一页</button><span>{{Math.floor(offset/60)+1}} / {{Math.max(1,Math.ceil(page.total/60))}}</span><button class="secondary" :disabled="offset+60>=page.total" @click="offset+=60">下一页</button></div>
+     </section>
+     <details v-if="state.report.issue_count" class="issues"><summary>扫描问题（{{state.report.issue_count}}，最多展示 1000 项）</summary><div v-for="(issue,i) in state.report.issues" :key="i"><code>{{issue.path}}</code><span>{{issues[issue.code]??issue.code}}</span></div></details>
+    </template>
+    <div v-else-if="!scanning" class="ready-note">账号来源已选择，尚无索引。首次建立索引后，再次打开或切换即可直接浏览；监控在原索引上补充变化。</div>
+   </template>
+   <details v-if="state.excluded_items?.length" class="issues"><summary>备份中未包含媒体的项目（{{state.excluded_items.length}}）</summary><div v-for="(item,i) in state.excluded_items" :key="i"><code>{{item.path}}</code><span>{{statuses[item.code]??({temporary:'临时资源',pending:'尚未稳定'} as Record<string,string>)[item.code]??item.code}}</span></div></details>
+   <footer class="workspace-footer">来源月份是文件夹标签，不代表发送月或下载月。备份是复制，不减少源占用。语音仅盘点与原文件备份。</footer>
+  </div>
+ </main>
+ <div v-if="selected" class="modal-backdrop" @click.self="closeDetail"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="媒体详情"><button class="close-modal" @click="closeDetail" aria-label="关闭详情">×</button><div class="detail-preview"><video v-if="mediaURL&&selected.format==='iso-bmff'&&!playError" :src="mediaURL" controls preload="metadata" @error="playError=true"></video><img v-else-if="mediaURL&&!playError" :src="mediaURL" alt="媒体预览" @error="playError=true"/><span v-else>{{playError?'此文件当前无法预览；可能缺少对应编码支持。':'此格式暂不支持内置预览，原文件已保留。'}}</span></div><h2>{{name(selected)}}</h2><dl><dt>源相对路径</dt><dd>{{selected.relative_path}}</dd><dt>类型 / 来源角色</dt><dd>{{kindName(selected.kind)}} / {{roles[selected.role]}}</dd><dt>来源月份</dt><dd>{{selected.source_month||'未知'}}</dd><dt>逻辑大小 / 格式</dt><dd>{{bytes(selected.bytes)}} / {{selected.format}} · {{statuses[selected.status]}}</dd><dt>首次发现</dt><dd>{{fmtTime(selected.first_seen_at)}} · {{methods[selected.observation_method]??'未知'}}</dd><dt>稳定观察时间</dt><dd>{{fmtTime(selected.stable_observed_at)}}</dd><dt>文件系统创建时间</dt><dd>{{fmtTime(selected.fs_created_at)}}</dd><dt>文件系统修改时间</dt><dd>{{fmtTime(selected.fs_modified_at)}}</dd></dl><details v-if="history.length" class="history"><summary>查看已保存的观察记录（{{history.length}}）</summary><p v-for="(h,i) in history" :key="i">{{fmtTime(h.at)}} · {{eventNames[h.kind]??h.kind}}</p></details><p>首次发现是本工具的观察证据，不是 QQ 下载时间；稳定和文件头识别也不证明完整下载。原件、封面和临时文件分别管理。</p></section></div>
+ <div v-if="estimate" class="modal-backdrop" @click.self="estimate=null"><section class="backup-modal" role="dialog" aria-modal="true" aria-label="备份预览"><h2>备份当前筛选的媒体</h2><p>按当前类型、月份、角色、日期和大小条件复制。原文件保留。</p><dl><dt>可备份的稳定文件</dt><dd>{{estimate.files}} 个 · {{bytes(estimate.bytes)}}</dd><dt>暂不纳入</dt><dd>{{estimate.excluded}} 项（原因保存在清单中）</dd><dt>目标空间预算</dt><dd>{{bytes(estimate.estimated_peak)}}，复制前再次检查</dd></dl><p>明文媒体目录包，附来源、时间证据和 SHA-256；复制后独立校验。未知、临时、零字节及不稳定项不复制，不能称为全量备份。</p><div class="modal-actions"><button class="secondary" @click="estimate=null">取消</button><button class="primary" :disabled="!estimate.files" @click="backup">选择位置并备份</button></div></section></div>
+</div>
+</template>

@@ -540,7 +540,7 @@ func (s *Media) stream(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "media", item.ModifiedAt, f)
 }
 func (s *Media) DataPath() string { return filepath.Join(s.private, "catalog.sqlite") }
-func (s *Media) Buckets(view string) []media.Bucket {
+func (s *Media) Buckets(view string, includeBaseline ...bool) []media.Bucket {
 	s.mu.RLock()
 	if s.state.Mode != "backup" {
 		source := s.state.Source
@@ -548,7 +548,7 @@ func (s *Media) Buckets(view string) []media.Bucket {
 		if source == nil {
 			return []media.Bucket{}
 		}
-		b, err := s.catalog.Buckets(source.ID, view)
+		b, err := s.catalog.Buckets(source.ID, view, includeBaseline...)
 		if err != nil {
 			s.fail(err)
 			return []media.Bucket{}
@@ -559,7 +559,7 @@ func (s *Media) Buckets(view string) []media.Bucket {
 	items := make([]media.Item, 0, len(s.items))
 	for _, item := range s.items {
 		if view == "observed" {
-			if item.Method == "baseline" || item.FirstSeenAt.IsZero() {
+			if (item.Method == "baseline" && !(len(includeBaseline) > 0 && includeBaseline[0])) || item.FirstSeenAt.IsZero() {
 				continue
 			}
 			item.SourceMonth = item.FirstSeenAt.Local().Format("2006-01")

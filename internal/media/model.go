@@ -76,22 +76,24 @@ type Report struct {
 	Items          []Item    `json:"-"`
 }
 type Filter struct {
-	View     string `json:"view"`
-	From     string `json:"from"`
-	To       string `json:"to"`
-	Kind     string `json:"kind"`
-	Month    string `json:"month"`
-	Role     string `json:"role"`
-	Status   string `json:"status"`
-	MinBytes int64  `json:"min_bytes"`
-	MaxBytes int64  `json:"max_bytes"`
-	Offset   int    `json:"offset"`
-	Limit    int    `json:"limit"`
+	IncludeBaseline bool   `json:"include_baseline"`
+	View            string `json:"view"`
+	From            string `json:"from"`
+	To              string `json:"to"`
+	Kind            string `json:"kind"`
+	Month           string `json:"month"`
+	Role            string `json:"role"`
+	Status          string `json:"status"`
+	MinBytes        int64  `json:"min_bytes"`
+	MaxBytes        int64  `json:"max_bytes"`
+	Offset          int    `json:"offset"`
+	Limit           int    `json:"limit"`
 }
 type Page struct {
-	Items []Item `json:"items"`
-	Total int    `json:"total"`
-	Bytes int64  `json:"bytes"`
+	BaselineFiles int    `json:"baseline_files"`
+	Items         []Item `json:"items"`
+	Total         int    `json:"total"`
+	Bytes         int64  `json:"bytes"`
 }
 
 func Paginate(items []Item, f Filter) Page {
@@ -103,6 +105,13 @@ func Paginate(items []Item, f Filter) Page {
 	}
 	p := Page{Items: []Item{}}
 	for _, item := range items {
+		if f.View == "observed" && item.Method == "baseline" {
+			all := f
+			all.IncludeBaseline = true
+			if Matches(item, all) {
+				p.BaselineFiles++
+			}
+		}
 		if !Matches(item, f) {
 			continue
 		}
@@ -118,7 +127,7 @@ func Paginate(items []Item, f Filter) Page {
 func Matches(item Item, f Filter) bool {
 	month := item.SourceMonth
 	if f.View == "observed" {
-		if item.Method == "baseline" || item.FirstSeenAt.IsZero() {
+		if (item.Method == "baseline" && !f.IncludeBaseline) || item.FirstSeenAt.IsZero() {
 			return false
 		}
 		month = item.FirstSeenAt.Local().Format("2006-01")

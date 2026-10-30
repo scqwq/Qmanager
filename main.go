@@ -52,7 +52,14 @@ func (a *App) UIReady() {
 	s := a.media.State()
 	if (s.Phase == "ready" || (s.Cached && os.Getenv("QMAN_SMOKE_CACHE_ONLY") == "1")) && s.Report != nil {
 		w, h := runtime.WindowGetSize(a.ctx)
-		b, _ := json.Marshal(map[string]interface{}{"files": s.Report.Files, "complete": s.Report.Complete, "cached": s.Cached, "width": w, "height": h, "bridge": "vue-webview2-go"})
+		defaultDates := a.media.Page(media.Filter{View: "observed"})
+		withInitial := a.media.Page(media.Filter{View: "observed", IncludeBaseline: true})
+		dateMatches := 0
+		if len(withInitial.Items) > 0 {
+			day := withInitial.Items[0].FirstSeenAt.Local().Format("2006-01-02")
+			dateMatches = a.media.Page(media.Filter{View: "observed", IncludeBaseline: true, From: day, To: day}).Total
+		}
+		b, _ := json.Marshal(map[string]interface{}{"files": s.Report.Files, "complete": s.Report.Complete, "cached": s.Cached, "width": w, "height": h, "bridge": "vue-webview2-go", "observed_default": defaultDates.Total, "observed_with_initial": withInitial.Total, "initial_date_matches": dateMatches})
 		if os.WriteFile(filepath.Join(a.private, "ui-smoke.json"), b, 0600) == nil {
 			runtime.Quit(a.ctx)
 		}
@@ -78,6 +85,9 @@ func (a *App) GetEstimate(f media.Filter) mediabackup.Preview  { return a.media.
 func (a *App) GetMediaURL(id string) (string, error)           { return a.media.MediaURL(id) }
 func (a *App) GetHistory(id string) ([]catalog.History, error) { return a.media.History(id) }
 func (a *App) GetBuckets(view string) []media.Bucket           { return a.media.Buckets(view) }
+func (a *App) GetFilterBuckets(f media.Filter) []media.Bucket {
+	return a.media.Buckets(f.View, f.IncludeBaseline)
+}
 func (a *App) CreateBackup(f media.Filter) error {
 	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择媒体备份存放位置（复制，不移动源文件）"})
 	if err != nil || path == "" {

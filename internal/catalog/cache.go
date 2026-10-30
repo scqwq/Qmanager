@@ -115,7 +115,10 @@ func cacheWhere(source string, f media.Filter) (string, []interface{}, error) {
 		add("substr(c.first_seen,1,19)"+op+"?", t.UTC().Format("2006-01-02T15:04:05"))
 	}
 	if f.View == "observed" {
-		clauses = append(clauses, "c.method<>'baseline'", "c.first_seen<>''")
+		clauses = append(clauses, "c.first_seen<>''", "substr(c.first_seen,1,19)<>'0001-01-01T00:00:00'")
+		if !f.IncludeBaseline {
+			clauses = append(clauses, "c.method<>'baseline'")
+		}
 		if f.Month == "__unknown__" {
 			clauses = append(clauses, "1=0")
 		} else if f.Month != "" {
@@ -158,6 +161,17 @@ func (c *Catalog) Page(ctx context.Context, source string, f media.Filter) (medi
 	if err = c.db.QueryRowContext(ctx, "SELECT count(*),coalesce(sum(c.bytes),0) FROM media_cache c WHERE "+where, args...).Scan(&p.Total, &p.Bytes); err != nil {
 		return p, err
 	}
+	if f.View == "observed" {
+		all := f
+		all.IncludeBaseline = true
+		baselineWhere, baselineArgs, e := cacheWhere(source, all)
+		if e != nil {
+			return p, e
+		}
+		if e = c.db.QueryRowContext(ctx, "SELECT count(*) FROM media_cache c WHERE "+baselineWhere+" AND c.method='baseline'", baselineArgs...).Scan(&p.BaselineFiles); e != nil {
+			return p, e
+		}
+	}
 	if f.Limit < 1 || f.Limit > 100 {
 		f.Limit = 60
 	}
@@ -186,7 +200,7 @@ func (c *Catalog) Page(ctx context.Context, source string, f media.Filter) (medi
 	}
 	return p, rows.Err()
 }
-func (c *Catalog) Buckets(source, view string) ([]media.Bucket, error) {
+func (c *Catalog) Buckets(source, view string, includeBaseline ...bool) ([]media.Bucket, error) {
 	out := []media.Bucket{}
 	if view != "observed" {
 		rows, err := c.db.Query("SELECT kind,month,role,count(*),coalesce(sum(bytes),0) FROM media_cache WHERE source=? GROUP BY kind,month,role ORDER BY month DESC,kind,role", source)
@@ -203,7 +217,11 @@ func (c *Catalog) Buckets(source, view string) ([]media.Bucket, error) {
 		}
 		return out, rows.Err()
 	}
-	rows, err := c.db.Query("SELECT kind,first_seen,role,count(*),sum(bytes) FROM media_cache WHERE source=? AND method<>'baseline' AND first_seen<>'' GROUP BY kind,first_seen,role", source)
+	condition := " AND method<>'baseline'"
+	if len(includeBaseline) > 0 && includeBaseline[0] {
+		condition = ""
+	}
+	rows, err := c.db.Query("SELECT kind,first_seen,role,count(*),sum(bytes) FROM media_cache WHERE source=?"+condition+" AND first_seen<>'' GROUP BY kind,first_seen,role", source)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +234,7 @@ func (c *Catalog) Buckets(source, view string) ([]media.Bucket, error) {
 			return nil, err
 		}
 		t, e := time.Parse(time.RFC3339Nano, at)
-		if e != nil {
+		if e != nil || t.IsZero() {
 			continue
 		}
 		b.Month = t.Local().Format("2006-01")

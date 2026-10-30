@@ -1,52 +1,74 @@
-# Qman / QQArchive — 媒体管理首版试用构建
+# Qman / QQArchive — QQ 本地媒体管理
 
-Windows 中文桌面，Go＋Wails v2＋Vue 3/TypeScript＋SQLite。支持手选多个来源并切换、图片/视频/收到的表情按月份与大小查看、语音盘点、图片缩略预览及尝试视频播放、首次发现记录、目录包备份和独立 SHA-256 校验。所有 QQ 源文件只读，不登录、不注入、不上传，不删除或释放源空间。
+当前版本 **0.2.2-preview**，Windows 桌面试用构建。使用 Go、Wails v2、Vue 3 / TypeScript 和 SQLite，在本机管理 QQ 已保存的图片、视频、收到的表情及语音原文件。
 
-运行 `build/bin/Qman.exe` 或新版 `build/bin/Qman-0.2.1.exe`；用户只需 WebView2 Runtime，不需要开发工具。说明见 [USER_GUIDE](docs/USER_GUIDE.md)，备份格式见 [MEDIA_FORMAT](docs/MEDIA_FORMAT.md)，真实覆盖与限制见 [PROGRESS](docs/PROGRESS.md)。支持选 Tencent Files 等外层文件夹发现账号，按账号切换；已有清单从 SQLite 分页显示，开始监控后增量补充，每 2 分钟完整核对。正常重开不自动读源媒体。
+QQ 源目录始终只读：不登录账号、不注入或修改 QQ、不解密消息、不上传媒体，不删除、移动或重命名源文件。创建索引和备份不会减少源占用。
 
-当前为合成测试与本机启动通信验证过的试用构建；真实 QQ 小样本、视频编码播放、实际窗口完整操作与大文件/断盘/容量故障/干净环境尚未验收，不称正式发行。消息解密继续暂缓，未解决旧 Reader 阻塞。
+## 直接运行
 
-开发构建：Go 1.25+、Node/npm、WebView2，执行 `./tools/Build-Qman.ps1`，版本固定在 go.mod、go.sum、frontend/package-lock.json，工具和缓存放 `.local/`。开发源码首次编译需先构建前端资源。`go test ./...`、`go vet ./...` 运行合成测试；受限 Windows 宿主的发布权限失败须与普通 Windows 环境区分。
+关闭旧版窗口，双击 `build/bin/Qman.exe` 或 `build/bin/Qman-0.2.2.exe`。完整试用包在 `build/releases/Qman-0.2.2-preview-win-x64.zip`，含程序、使用说明及依赖许可证。构建产物不纳入 Git。
 
-以下保留的是历史合成文本归档 CLI 开发说明，不是新媒体目录包的用法。
+运行需要 Microsoft Edge WebView2 Runtime；用户不需要安装 Go、Node.js 或数据库服务。完整操作见 [使用说明](docs/USER_GUIDE.md)。
 
-历史 CLI 是 **合成数据开发演示**。尚未适配真实 NTQQ，不是旧聊天归档 v0.1 的正式交付。
+1. 点击 **选择 QQ 数据文件夹**，可选择最外层 `Tencent Files`、迁移后的父目录、账号目录或 `nt_data`，也支持单独的 Pic / Video / emoji-recv / Ptt。
+2. 程序有界发现账号媒体根，在左侧切换来源。目录名仅作标识，可自行命名，不代表已验证昵称或聊天归属。
+3. 对新账号点击 **首次建立索引并监控**。已有索引的账号直接分页显示旧清单，重开不自动扫描源；点击 **继续监控 / 补充索引** 后后台核对变化。
+4. **全部类型**表示当前来源的全部媒体类型。顶部月份下拉与侧边栏同步；可再按角色、状态和大小筛选。
 
-已有流程：生成合成明文 SQLite → 选择会话及日期 → 导出 `.qqarc` → 哈希/SQLite/计数/记录范围校验 → 源目录不可访问后打开与中文文字搜索。
+## 月份和日期怎样理解
 
-归档默认包含明文。不会自动上传云盘，不支持恢复进 QQ，也不会删除或释放 QQ 源数据空间；创建副本和归档会增加占用。未知消息保留原始 JSON 与类型，结果带警告。
+| 入口 | 含义 |
+| --- | --- |
+| 来源月份 | 文件夹 YYYY-MM 标签，不保证是发送月、下载月或拍摄月 |
+| 新增发现日期 | 本工具首次发现后续新增实例的日期，不是 QQ 下载时间 |
+| 包含首次导入记录 | 显式纳入首批扫描已有文件，按原首次索引日期查找；仍标“扫描前已存在” |
+| 文件系统创建/修改时间 | 可在详情查看，仅作辅助证据 |
 
-## 开发环境与运行
+日期更改后自动筛选，也可点击“查询”。如果首次导入当天查不到，检查“包含首次导入记录”；默认新增视图会排除基线旧文件。日期区间包含结束日；选择月份会清除日期区间，输入日期会清除月份限制，避免互相排斥。筛选不改写任何历史时间或源文件。
 
-已运行环境：Windows amd64 / Go 1.25.4。项目最低 Go 1.25；SQLite 驱动固定 modernc.org/sqlite v1.39.1，依赖及校验值在 go.mod/go.sum。该纯 Go 驱动仅用于开发源和自有归档数据库，不用于解密 QQ。
+## 只读索引与磁盘数据
 
-在项目根目录执行：
+运行时沿用 SQLite，不需要 Redis，也不使用 Git 存放媒体。监控在既有索引上补充变化：原生通知按受影响路径更新，每 **2 分钟**完整核对补漏；身份、大小、mtime 未变时复用格式识别结果。稳定性检查仅是启发式，不证明完整下载。
+
+| 数据 | 默认位置 | 用途与保留原则 |
+| --- | --- | --- |
+| 索引、查询缓存、观察历史 | `%LOCALAPPDATA%/Qman/catalog.sqlite` | 只保存元信息及历史，不保存原媒体；包含不能靠源文件准确重建的首次发现证据，不能当普通缓存随意删除 |
+| SQLite 临时事务文件 | 同目录的 `catalog.sqlite-journal` 等（存在时） | 属于数据库状态，不在应用运行时手动删除 |
+| WebView2 运行数据 | `%LOCALAPPDATA%/Qman/webview/` | 内嵌界面的独立用户数据目录；不是 QQ 媒体备份 |
+| 开发工具、编译缓存、合成样本 | 项目 `.local/` | 只供开发验证，不是普通用户运行所需的媒体索引 |
+| 前端依赖、打包资源 | `frontend/node_modules/`、`frontend/dist/` | 开发/构建产物，不纳入 Git |
+
+当前没有额外的持久缩略图缓存；预览响应禁止缓存。磁盘占用取决于记录数量、版本历史和运行数据，应现场统计；文件逻辑长度与磁盘分配空间要分开，不在文档硬编码本机容量。索引位置含私人路径/历史，不提交或上传；可通过“备份观察索引”保留副本。
+
+## 预览与备份边界
+
+PNG/JPEG/GIF 支持受限缩略图，GIF 详情可尝试动图；视频通过本机受控接口分段读取，编码是否可播依赖 WebView2。WebP/HEIC/SILK 播放尚未支持，语音先盘点与原文件备份。原件、封面、缩略图、临时资源分开显示；只见封面不能认定视频完整。
+
+按当前条件备份稳定文件，采用自描述目录包并独立核对大小、引用及 SHA-256；未知、空、临时、不稳定项保留排除原因。复制会占用目标空间，不代表可删除源。备份可在原源断开、应用索引为空时独立打开，恢复包内已有时间证据；未保存的历史不会被补造。不自动上传云盘、不恢复进 QQ。格式见 [媒体目录包](docs/MEDIA_FORMAT.md)。
+
+## 从源码构建与验证
+
+开发需要 Go 1.25+、Node.js/npm、WebView2。依赖固定在 `go.mod` / `go.sum` 和 `frontend/package-lock.json`。
+
+```powershell
+.\tools\Build-Qman.ps1
+# 另存一个版本，避免正在运行的文件被占用：
+.\tools\Build-Qman.ps1 -OutputName Qman-0.2.2.exe
+```
+
+脚本将 Wails 工具和依赖缓存放在 `.local/`，安装锁定前端依赖，完成类型检查、生产构建、exe 及许可证说明。首次运行 Go 检查前应先构建前端，因为桌面入口会嵌入 `frontend/dist`。
 
 ```powershell
 go test ./...
-go build -o build/bin/qqarchive-cli.exe ./cmd/qqarchive-cli
+go vet ./...
 ```
 
-以下全部是合成数据；目录必须不存在，示例先在用户临时目录建立独立父目录：
+默认测试使用合成数据，不把真实 QQ 数据送入 CI。受限 Windows 环境的文件发布权限失败与普通环境实际结果须区分。测试范围见 [TESTING](docs/TESTING.md)，兼容与实证见 [COMPATIBILITY](docs/COMPATIBILITY.md)。
 
-```powershell
-$demoRoot = Join-Path $env:TEMP ('qqarchive-demo-' + [guid]::NewGuid())
-New-Item -ItemType Directory -Path $demoRoot | Out-Null
-go run ./cmd/qqarchive-cli demo (Join-Path $demoRoot 'source')
-go run ./cmd/qqarchive-cli export (Join-Path $demoRoot 'source/source.db') (Join-Path $demoRoot 'demo.qqarc') demo-chat 2026-10-03 2026-10-03 Asia/Shanghai
-go run ./cmd/qqarchive-cli verify (Join-Path $demoRoot 'demo.qqarc')
-go run ./cmd/qqarchive-cli search (Join-Path $demoRoot 'demo.qqarc') 重复
-```
+## 当前状态与后续工作
 
-目前 CLI 搜索一次最多 50 条；核心接口支持分页。日期按指定时区解释，包含结束日期，内部使用次日当地零点排他边界。ID 保留为字符串，重复文字不合并。
+已通过合成回归、前端类型/构建及本机 WebView2/Vue/Go 启动与缓存查询检查。真实私有应用索引的只读诊断不等于真实媒体完整验收。完整窗口点击/视觉、视频编码矩阵、真实样本一致性、大文件、容量不足、断盘/休眠/崩溃、长期资源与干净环境仍待验收，不称正式发行。
 
-## 历史合成文本 CLI 的限制
+近期优先只读读取、索引缓存和日期体验；备份保留原型，不增加源删除。当前约定见 [AGENTS.md](AGENTS.md)，计划见 [PROJECT_PLAN](docs/PROJECT_PLAN.md)，实际进展见 [PROGRESS](docs/PROGRESS.md)。
 
-- 只接受明确标记的合成 schema，不尝试打开 QQ 数据库。NTQQ 真实适配仍未完成，现已暂缓，不再是当前媒体管理前置。
-- 没有图片、附件、catalog、图形界面、容量预览或恢复任务功能。
-- 开发导入限制：SQLite 展开不超过 512 MiB，总展开不超过 1 GiB，元数据另有限额。这是演示资源上限，不是 v0.1 大包能力；超过 4 GiB 的 ZIP64 尚未实测。
-- Windows 发布使用同卷 MoveFileExW，禁用覆盖和跨卷复制标志；其他平台暂用硬链接，尚未实测。移动存储、长路径与中断持久性仍需专项验收。
-- cache 位于操作系统临时目录，仅用于解压 messages.db；当前还未完成持久用户 ACL/cache 容量管理，勿用来导入真实个人归档。
-- Chinese 搜索使用参数化 LIKE 子串，不宣称 FTS5；分页不消除全表扫描成本。
-
-真实副本不要放进仓库，不要把密钥粘贴到聊天。调查与证据见 docs/NTQQ_RESEARCH.md、docs/COMPATIBILITY.md 和 docs/PROGRESS.md。
+旧 `cmd/qqarchive-cli` 与 `.qqarc` 是合成文本归档开发子集，不是新媒体包；消息 Reader 和密钥兼容仍未解决，现已暂缓。历史格式说明见 [ARCHIVE_FORMAT](docs/ARCHIVE_FORMAT.md)，历史验证仍保留于 TESTING / PROGRESS，不把媒体进展算作旧聊天归档里程碑完成。

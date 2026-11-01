@@ -1,11 +1,61 @@
 package catalog
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestBackupHistoryDeletionGuardsAndAtomicPlanRevocation(t *testing.T) {
+	c, err := Open(filepath.Join(t.TempDir(), "catalog.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	manifest := `{"id":"forget-synthetic","entries":[]}`
+	row := BackupRecord{ID: "forget-synthetic", Manifest: manifest, Digest: ManifestDigest([]byte(manifest)), Status: "available"}
+	if err = c.SaveBackup(row); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.DeleteBackupHistory(context.Background(), row.ID, row.Digest); err == nil {
+		t.Fatal("available record removed")
+	}
+	row.Status = "deleted"
+	if err = c.SaveBackup(row); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.DeleteBackupHistory(context.Background(), row.ID, "stale-digest"); err == nil {
+		t.Fatal("stale identity accepted")
+	}
+	for _, state := range []string{"prepared", "running"} {
+		job := CleanupJob{ID: state, BackupIDs: []string{row.ID}, State: state}
+		payload, _ := json.Marshal(job)
+		if _, err = c.db.Exec("INSERT INTO cleanup_jobs VALUES(?,?,?,?)", state, "synthetic-source", state, string(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = c.DeleteBackupHistory(context.Background(), row.ID, row.Digest); err == nil {
+		t.Fatal("running cleanup allowed history deletion")
+	}
+	if current, e := c.Cleanup("prepared"); e != nil || current.State != "prepared" {
+		t.Fatal("failed deletion partially revoked plans", current.State, e)
+	}
+	if _, err = c.Backup(row.ID); err != nil {
+		t.Fatal("failed deletion lost history", err)
+	}
+	if err = c.CleanupState("running", "completed"); err != nil {
+		t.Fatal(err)
+	}
+	invalidated, err := c.DeleteBackupHistory(context.Background(), row.ID, row.Digest)
+	if err != nil || len(invalidated) != 1 || invalidated[0] != "prepared" {
+		t.Fatal("prepared revocation failed", invalidated, err)
+	}
+	if current, e := c.Cleanup("running"); e != nil || current.State != "completed" {
+		t.Fatal("completed audit lost", current.State, e)
+	}
+}
 
 func TestBackupRegistryIdentityAndPrivateManifest(t *testing.T) {
 	c, err := Open(filepath.Join(t.TempDir(), "catalog.sqlite"))

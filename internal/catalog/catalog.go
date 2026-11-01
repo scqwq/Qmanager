@@ -388,7 +388,7 @@ func (c *Catalog) History(instance string) ([]History, error) {
 }
 
 func (c *Catalog) RestoreEvidence(id string, payload []byte) error {
-	if len(payload) > 32*1024*1024 {
+	if len(payload) > 128*1024*1024 {
 		return errors.New("备份证据超过上限")
 	}
 	var previous string
@@ -398,6 +398,11 @@ func (c *Catalog) RestoreEvidence(id string, payload []byte) error {
 	}
 	if err != nil && !isNoRows(err) {
 		return err
+	}
+	if isNoRows(err) {
+		if info, e := os.Stat(c.path); e == nil && info.Size()+int64(len(payload)) > 512*1024*1024 {
+			return errors.New("索引容量不足以保存观察证据；已复制媒体仍保留")
+		}
 	}
 	_, err = c.db.Exec("INSERT INTO restored_backups VALUES(?,?,?) ON CONFLICT(id) DO NOTHING", id, string(payload), time.Now().UTC().Format(time.RFC3339Nano))
 	return err

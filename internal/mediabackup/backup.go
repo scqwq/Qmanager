@@ -16,12 +16,13 @@ import (
 	"qqarchive/internal/catalog"
 	"qqarchive/internal/media"
 	"qqarchive/internal/storage"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
 )
 
-const maxManifest = 32 * 1024 * 1024
+const maxManifest = maxIndex
 const maxBytes = int64(2) * 1024 * 1024 * 1024 * 1024
 
 type Entry struct {
@@ -31,6 +32,8 @@ type Entry struct {
 	Excluded string            `json:"excluded"`
 }
 type Manifest struct {
+	PayloadRoot   string       `json:"payload_root"`
+	IndexSHA256   string       `json:"index_sha256"`
 	RestorePrefix string       `json:"restore_prefix,omitempty"`
 	Format        string       `json:"format"`
 	Version       int          `json:"version"`
@@ -42,6 +45,8 @@ type Manifest struct {
 	Entries       []Entry      `json:"entries"`
 }
 type Preview struct {
+	Pending         int            `json:"pending"`
+	PendingBytes    int64          `json:"pending_bytes"`
 	ExcludedReasons map[string]int `json:"excluded_reasons"`
 	Files           int            `json:"files"`
 	Bytes           int64          `json:"bytes"`
@@ -49,11 +54,11 @@ type Preview struct {
 	EstimatedPeak   int64          `json:"estimated_peak"`
 }
 type Result struct {
-	Path          string `json:"path"`
-	Files         int    `json:"files"`
-	UniqueObjects int    `json:"unique_objects"`
-	Excluded      int    `json:"excluded"`
-	Bytes         int64  `json:"bytes"`
+	Path         string `json:"path"`
+	Files        int    `json:"files"`
+	PayloadFiles int    `json:"payload_files"`
+	Excluded     int    `json:"excluded"`
+	Bytes        int64  `json:"bytes"`
 }
 
 func reason(item media.Item) string {
@@ -70,12 +75,24 @@ func reason(item media.Item) string {
 	return ""
 }
 func Estimate(items []media.Item, f media.Filter) Preview {
+	return estimate(items, f, nil)
+}
+
+type BuildOptions struct{ Excluded map[string]string }
+
+func exclusion(item media.Item, extra map[string]string) string {
+	if why := extra[item.InstanceID]; why != "" {
+		return why
+	}
+	return reason(item)
+}
+func estimate(items []media.Item, f media.Filter, extra map[string]string) Preview {
 	var p Preview
 	for _, item := range items {
 		if !media.Matches(item, f) {
 			continue
 		}
-		if why := reason(item); why != "" {
+		if why := exclusion(item, extra); why != "" {
 			p.Excluded++
 			if p.ExcludedReasons == nil {
 				p.ExcludedReasons = map[string]int{}
@@ -87,19 +104,43 @@ func Estimate(items []media.Item, f media.Filter) Preview {
 		}
 	}
 	if p.Files > 0 {
-		p.EstimatedPeak = DirectoryBudget(p.Bytes)
+		p.EstimatedPeak = DirectoryBudgetFor(p.Files+p.Excluded, p.Bytes)
+	}
+	return p
+}
+
+// Plan separates pending candidates from known exclusions. Pending candidates
+// require real on-demand observations; this does not grant Build eligibility.
+func Plan(items []media.Item, f media.Filter) Preview {
+	p := Estimate(items, f)
+	p.Pending = p.ExcludedReasons["pending"]
+	p.Excluded -= p.Pending
+	delete(p.ExcludedReasons, "pending")
+	for _, item := range items {
+		if media.Matches(item, f) && reason(item) == "pending" {
+			p.PendingBytes += item.Bytes
+		}
+	}
+	if p.Files+p.Pending > 0 {
+		p.EstimatedPeak = DirectoryBudgetFor(p.Files+p.Pending+p.Excluded, p.Bytes+p.PendingBytes)
 	}
 	return p
 }
 
 // Includes a conservative manifest reserve, rather than claiming an exact size.
-func DirectoryBudget(bytes int64) int64 { return bytes + maxManifest }
-
-func Build(ctx context.Context, source media.Source, items []media.Item, f media.Filter, parent string, protected []string, history func(string) ([]catalog.History, error), progress func(int, int64)) (Result, error) {
-	if err := media.ValidateFilter(f); err != nil {
-		return Result{}, err
+func DirectoryBudgetFor(entries int, bytes int64) int64 {
+	reserve := int64(maxHeader) + int64(entries)*2048
+	if reserve > maxIndex {
+		reserve = maxIndex
 	}
+	return bytes + reserve
+}
+
+func Build(ctx context.Context, source media.Source, items []media.Item, f media.Filter, parent string, protected []string, history func(string) ([]catalog.History, error), progress func(int, int64), options ...BuildOptions) (Result, error) {
 	var result Result
+	if err := media.ValidateFilter(f); err != nil {
+		return result, err
+	}
 	target, err := media.Canonical(parent)
 	if err != nil {
 		return result, err
@@ -113,19 +154,20 @@ func Build(ctx context.Context, source media.Source, items []media.Item, f media
 	if err != nil || !info.IsDir() {
 		return result, errors.New("备份目标目录不可用")
 	}
-	p := Estimate(items, f)
+	var extra map[string]string
+	if len(options) > 0 {
+		extra = options[0].Excluded
+	}
+	p := estimate(items, f, extra)
 	if p.Files == 0 {
-		return result, errors.New("当前条件没有可备份的稳定文件，请等待核对或调整筛选")
+		return result, errors.New("当前条件没有可备份的稳定文件")
 	}
 	if p.Bytes > maxBytes {
-		return result, errors.New("备份超过当前容量上限")
+		return result, errors.New("备份超过容量上限")
 	}
 	free, err := storage.Free(target)
-	if err != nil {
-		return result, err
-	}
-	if free < uint64(p.EstimatedPeak) {
-		return result, errors.New("目标可用空间不足（包含清单和暂存预算）")
+	if err != nil || free < uint64(p.EstimatedPeak) {
+		return result, errors.New("目标可用空间不足或无法查询")
 	}
 	stage, err := os.MkdirTemp(target, ".qman-media-stage-")
 	if err != nil {
@@ -137,17 +179,22 @@ func Build(ctx context.Context, source media.Source, items []media.Item, f media
 		}
 	}()
 	if err = storage.Private(stage); err != nil {
-		return result, err
+		return result, fmt.Errorf("设置备份暂存目录访问范围: %w", err)
 	}
-	objects := filepath.Join(stage, "objects")
-	if err = os.Mkdir(objects, 0700); err != nil {
-		return result, err
+	m := Manifest{Format: Format, Version: Version, ID: uuid.NewString(), CreatedAt: time.Now().UTC(), SourceID: source.ID, SourceName: source.Name, Selection: f, RestorePrefix: restorePrefix(source.Resolved), PayloadRoot: "Media", Entries: []Entry{}}
+	if m.RestorePrefix != "" {
+		m.PayloadRoot = "Tencent Files"
+	} else if len(source.Scopes) == 1 && source.Scopes[0].Prefix == "" {
+		for _, root := range []string{"Pic", "Video", "Ptt", "Emoji/emoji-recv"} {
+			if strings.EqualFold(filepath.Base(source.Resolved), filepath.Base(filepath.FromSlash(root))) {
+				m.PayloadRoot = "Media/" + root
+				break
+			}
+		}
 	}
-	m := Manifest{Format: "qman-media-directory", Version: 1, ID: uuid.NewString(), CreatedAt: time.Now().UTC(), SourceID: source.ID, SourceName: source.Name, Selection: f, Entries: []Entry{}}
-	m.RestorePrefix = restorePrefix(source.Resolved)
-	unique := map[string]bool{}
-	buffer := make([]byte, 1024*1024)
+	names := map[string]bool{}
 	metadataBytes := 0
+	buffer := make([]byte, 1024*1024)
 	for _, item := range items {
 		if err = ctx.Err(); err != nil {
 			return result, err
@@ -155,91 +202,77 @@ func Build(ctx context.Context, source media.Source, items []media.Item, f media
 		if !media.Matches(item, f) {
 			continue
 		}
-		entry := Entry{Item: item, Excluded: reason(item), History: []catalog.History{}}
+		if len(m.Entries) >= media.MaxFiles || !safeRelative(item.RelativePath) || !safeID.MatchString(item.InstanceID) {
+			return result, errors.New("所选文件路径、实例或数量无效")
+		}
+		key := strings.ToLower(item.RelativePath)
+		if names[key] {
+			return result, errors.New("所选文件路径重复")
+		}
+		names[key] = true
+		entry := Entry{Item: item, Excluded: exclusion(item, extra), History: []catalog.History{}}
 		if history != nil {
 			entry.History, err = history(item.InstanceID)
 			if err != nil {
 				return result, err
 			}
 		}
-		encoded, e := json.Marshal(entry)
+		encoded, e := json.Marshal(compact(entry))
 		if e != nil {
 			return result, e
 		}
 		metadataBytes += len(encoded) + 128
-		if metadataBytes > maxManifest-1048576 {
-			return result, errors.New("所选观察历史超过清单容量，请缩小选择范围")
+		if len(encoded) > maxLine-128 || metadataBytes > maxIndex-1048576 {
+			return result, errors.New("所选观察证据超过索引容量，请缩小范围")
 		}
 		if entry.Excluded != "" {
 			m.Entries = append(m.Entries, entry)
 			result.Excluded++
 			continue
 		}
-		input, e := media.OpenItem(item)
+		path, e := PayloadPath(m, entry)
 		if e != nil {
 			return result, e
 		}
-		out, e := os.CreateTemp(objects, ".copy-")
+		if e = os.MkdirAll(filepath.Dir(filepath.Join(stage, filepath.FromSlash(path))), 0700); e != nil {
+			return result, e
+		}
+		input, e := media.OpenItem(item)
+		if e != nil {
+			return result, fmt.Errorf("读取所选媒体: %w", e)
+		}
+		out, e := os.OpenFile(filepath.Join(stage, filepath.FromSlash(path)), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if e != nil {
 			input.Close()
 			return result, e
 		}
-		h := sha256.New()
-		n, e := io.CopyBuffer(io.MultiWriter(out, h), media.CancelReader{Ctx: ctx, Reader: input}, buffer)
+		hash := sha256.New()
+		n, e := io.CopyBuffer(io.MultiWriter(out, hash), media.CancelReader{Ctx: ctx, Reader: io.LimitReader(input, item.Bytes+1)}, buffer)
 		stable := media.SameItem(input, item)
 		input.Close()
-		syncErr := out.Sync()
-		closeErr := out.Close()
-		pathCheck, pathErr := media.OpenItem(item)
-		if pathErr == nil {
-			pathCheck.Close()
+		se := out.Sync()
+		ce := out.Close()
+		checked, pe := media.OpenItem(item)
+		if checked != nil {
+			checked.Close()
 		}
-		if e != nil || syncErr != nil || closeErr != nil || n != item.Bytes || !stable || pathErr != nil {
+		if e != nil || se != nil || ce != nil || pe != nil || n != item.Bytes || !stable {
 			return result, errors.New("复制失败、取消或源文件发生变化；未发布备份")
 		}
-		entry.SHA256 = hex.EncodeToString(h.Sum(nil))
-		object := filepath.Join(objects, entry.SHA256)
-		if unique[entry.SHA256] {
-			if err = os.Remove(out.Name()); err != nil {
-				return result, err
-			}
-		} else {
-			if err = storage.Publish(out.Name(), object); err != nil {
-				return result, err
-			}
-			unique[entry.SHA256] = true
-			result.Bytes += n
-		}
+		entry.SHA256 = hex.EncodeToString(hash.Sum(nil))
 		m.Entries = append(m.Entries, entry)
 		result.Files++
+		result.PayloadFiles++
+		result.Bytes += n
 		if progress != nil {
 			progress(result.Files, result.Bytes)
 		}
 	}
-	b, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return result, err
-	}
-	if len(b) > maxManifest {
-		return result, errors.New("备份清单超出大小上限")
-	}
-	mf, err := os.OpenFile(filepath.Join(stage, "manifest.json"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		return result, err
-	}
-	_, err = mf.Write(b)
-	if err == nil {
-		err = mf.Sync()
-	}
-	closeErr := mf.Close()
-	if err != nil {
-		return result, err
-	}
-	if closeErr != nil {
-		return result, closeErr
+	if err = writeMetadata(ctx, stage, &m); err != nil {
+		return result, fmt.Errorf("写入备份说明和索引: %w", err)
 	}
 	if _, _, err = Open(ctx, stage, nil); err != nil {
-		return result, err
+		return result, fmt.Errorf("发布前校验目录树: %w", err)
 	}
 	if err = ctx.Err(); err != nil {
 		return result, err
@@ -248,12 +281,11 @@ func Build(ctx context.Context, source media.Source, items []media.Item, f media
 		return result, err
 	}
 	output := filepath.Join(target, "Qman-"+time.Now().Format("20060102-150405")+"-"+m.ID[:8])
-	if err = storage.Publish(stage, output); err != nil {
-		return result, err
+	if err = publishTree(ctx, stage, output); err != nil {
+		return result, fmt.Errorf("发布备份目录失败: %w", err)
 	}
 	stage = ""
 	result.Path = output
-	result.UniqueObjects = len(unique)
 	return result, nil
 }
 
@@ -268,6 +300,11 @@ func safeRelative(path string) bool {
 	if !filepath.IsLocal(filepath.FromSlash(path)) || filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) != path {
 		return false
 	}
+	for _, c := range path {
+		if c < 32 {
+			return false
+		}
+	}
 	for _, part := range strings.Split(path, "/") {
 		stem := strings.ToUpper(strings.SplitN(part, ".", 2)[0])
 		if strings.TrimRight(part, " .") != part || stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" || device.MatchString(stem) {
@@ -278,155 +315,40 @@ func safeRelative(path string) bool {
 }
 
 func Open(ctx context.Context, path string, progress func(int, int64)) (Manifest, []media.Item, error) {
-	var m Manifest
 	root, err := media.Canonical(path)
 	if err != nil {
-		return m, nil, err
+		return Manifest{}, nil, err
 	}
-	mf, err := media.OpenRelative(root, "manifest.json")
+	m, err := readMetadata(ctx, root)
 	if err != nil {
 		return m, nil, err
 	}
-	info, err := mf.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxManifest {
-		mf.Close()
-		return m, nil, errors.New("清单不是受支持的普通文件或超过大小限制")
-	}
-	b, err := io.ReadAll(io.LimitReader(media.CancelReader{Ctx: ctx, Reader: mf}, maxManifest+1))
-	mf.Close()
+	expected, err := expectedTree(m)
 	if err != nil {
 		return m, nil, err
 	}
-	if err = json.Unmarshal(b, &m); err != nil {
-		return m, nil, errors.New("清单格式错误")
-	}
-	if m.Format != "qman-media-directory" || m.Version != 1 || !safeID.MatchString(m.ID) || len(m.Entries) > media.MaxFiles {
-		return m, nil, errors.New("不支持的备份格式、版本或对象数量")
-	}
-	if m.RestorePrefix != "" && !validPrefix(m.RestorePrefix) {
-		return m, nil, errors.New("备份恢复路径映射无效")
-	}
-	if err = media.ValidateFilter(m.Selection); err != nil {
+	if _, _, err = inspectTree(ctx, root, expected, false); err != nil {
 		return m, nil, err
 	}
-	expected := map[string]int64{}
-	instances := map[string]bool{}
-	var total int64
-	for _, entry := range m.Entries {
+	items := []media.Item{}
+	buffer := make([]byte, 1024*1024)
+	var bytes int64
+	for _, e := range m.Entries {
 		if err = ctx.Err(); err != nil {
 			return m, nil, err
 		}
-		item := entry.Item
-		if !safeRelative(item.RelativePath) || !safeID.MatchString(item.InstanceID) || instances[item.InstanceID] || item.Bytes < 0 || item.Bytes > maxBytes || len(entry.History) > 1000 {
-			return m, nil, errors.New("清单含危险路径、重复实例或无效长度")
-		}
-		instances[item.InstanceID] = true
-		if entry.Excluded != "" {
-			if entry.SHA256 != "" {
-				return m, nil, errors.New("未备份项不能引用对象")
-			}
+		if e.Excluded != "" {
 			continue
 		}
-		if !hashName.MatchString(entry.SHA256) {
-			return m, nil, errors.New("对象哈希引用无效")
+		rel, er := PayloadPath(m, e)
+		if er != nil {
+			return m, nil, er
 		}
-		if old, ok := expected[entry.SHA256]; ok && old != item.Bytes {
-			return m, nil, errors.New("同一对象引用长度不一致")
+		physical, er := verifyFile(ctx, root, rel, e.SHA256, e.Item.Bytes, buffer)
+		if er != nil {
+			return m, nil, er
 		}
-		if _, ok := expected[entry.SHA256]; !ok {
-			expected[entry.SHA256] = item.Bytes
-			total += item.Bytes
-			if total > maxBytes {
-				return m, nil, errors.New("备份超过展开量上限")
-			}
-		}
-	}
-	rd, err := media.OpenRelative(root, ".")
-	if err != nil {
-		return m, nil, err
-	}
-	rootEntries, err := rd.ReadDir(4)
-	rd.Close()
-	if err != nil && err != io.EOF {
-		return m, nil, err
-	}
-	if len(rootEntries) != 2 {
-		return m, nil, errors.New("备份根目录条目集合不符")
-	}
-	for _, e := range rootEntries {
-		if e.Name() != "objects" && e.Name() != "manifest.json" {
-			return m, nil, errors.New("备份含额外条目")
-		}
-	}
-	dir, err := media.OpenRelative(root, "objects")
-	if err != nil {
-		return m, nil, err
-	}
-	defer dir.Close()
-	found := map[string]bool{}
-	verified := map[string]media.Item{}
-	buffer := make([]byte, 1024*1024)
-	var checkedBytes int64
-	for {
-		entries, e := dir.ReadDir(128)
-		for _, de := range entries {
-			if err = ctx.Err(); err != nil {
-				return m, nil, err
-			}
-			length, ok := expected[de.Name()]
-			if !ok || found[de.Name()] || !hashName.MatchString(de.Name()) {
-				return m, nil, errors.New("对象集合不匹配")
-			}
-			f, err := media.OpenRelative(root, filepath.Join("objects", de.Name()))
-			if err != nil {
-				return m, nil, err
-			}
-			before, err := f.Stat()
-			if err != nil || !before.Mode().IsRegular() || before.Size() != length {
-				f.Close()
-				return m, nil, errors.New("对象类型或大小不匹配")
-			}
-			physical, e := media.AttachObject(media.Item{Bytes: length}, root, filepath.Join("objects", de.Name()))
-			if e != nil {
-				f.Close()
-				return m, nil, e
-			}
-			physicalInfo, ok := physical.InfoIdentity.(os.FileInfo)
-			if !ok || !os.SameFile(before, physicalInfo) {
-				f.Close()
-				return m, nil, errors.New("对象在校验时被替换")
-			}
-			h := sha256.New()
-			n, err := io.CopyBuffer(h, media.CancelReader{Ctx: ctx, Reader: io.LimitReader(f, length+1)}, buffer)
-			after, se := f.Stat()
-			f.Close()
-			if err != nil || se != nil || n != length || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) || hex.EncodeToString(h.Sum(nil)) != de.Name() {
-				return m, nil, errors.New("对象 SHA-256 校验失败或校验时发生变化")
-			}
-			verified[de.Name()] = physical
-			found[de.Name()] = true
-			checkedBytes += n
-			if progress != nil {
-				progress(len(found), checkedBytes)
-			}
-		}
-		if e == io.EOF {
-			break
-		}
-		if e != nil {
-			return m, nil, e
-		}
-	}
-	if len(found) != len(expected) {
-		return m, nil, errors.New("备份缺失对象")
-	}
-	items := []media.Item{}
-	for _, entry := range m.Entries {
-		if entry.Excluded != "" {
-			continue
-		}
-		physical := verified[entry.SHA256]
-		item := entry.Item
+		item := e.Item
 		item.Root = physical.Root
 		item.Path = physical.Path
 		item.InfoIdentity = physical.InfoIdentity
@@ -437,6 +359,20 @@ func Open(ctx context.Context, path string, progress func(int, int64)) (Manifest
 		item.Preview = physical.Preview
 		item.ID = rand.Text()
 		items = append(items, item)
+		bytes += item.Bytes
+		if progress != nil {
+			progress(len(items), bytes)
+		}
+	}
+	reread, err := readMetadata(ctx, root)
+	if err != nil {
+		return m, nil, err
+	}
+	if !reflect.DeepEqual(m.head(), reread.head()) {
+		return m, nil, errors.New("备份元数据在校验时变化")
+	}
+	if _, _, err = inspectTree(ctx, root, expected, false); err != nil {
+		return m, nil, err
 	}
 	return m, items, nil
 }

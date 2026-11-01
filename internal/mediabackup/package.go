@@ -10,16 +10,16 @@ import (
 	"path/filepath"
 	"qqarchive/internal/media"
 	"qqarchive/internal/storage"
-	"reflect"
 	"strings"
 )
 
 type Package struct {
-	Manifest Manifest
-	Items    []media.Item
-	Bytes    []byte
-	Root     string
-	Cleanup  func()
+	Manifest      Manifest
+	Items         []media.Item
+	Bytes         []byte
+	Root          string
+	Cleanup       func()
+	MetadataBytes int64
 }
 
 func OpenPackage(ctx context.Context, path, temporary string, progress func(int, int64)) (*Package, error) {
@@ -37,60 +37,63 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 		if !info.Mode().IsRegular() {
 			return nil, errors.New("备份不是普通文件或目录")
 		}
-		input, err := media.OpenRelative(filepath.Dir(path), filepath.Base(path))
-		if err != nil {
-			return nil, err
+		input, e := media.OpenRelative(filepath.Dir(path), filepath.Base(path))
+		if e != nil {
+			return nil, e
 		}
 		defer input.Close()
-		if err = checkZIPDirectory(input, info.Size()); err != nil {
-			return nil, err
+		if e = checkZIPDirectory(input, info.Size()); e != nil {
+			return nil, e
 		}
-		reader, err := zip.NewReader(input, info.Size())
-		if err != nil {
-			return nil, err
+		reader, e := zip.NewReader(input, info.Size())
+		if e != nil {
+			return nil, e
 		}
-		if len(reader.File) > media.MaxFiles+1 {
-			return nil, errors.New("ZIP 条目过多")
-		}
-		names := map[string]bool{}
+		names := map[string]*zip.File{}
+		folded := map[string]bool{}
 		var total uint64
 		for _, entry := range reader.File {
-			name := entry.Name
-			if names[name] || entry.Mode()&os.ModeType != 0 || entry.Flags&1 != 0 || (entry.Method != zip.Store && entry.Method != zip.Deflate) {
-				return nil, errors.New("ZIP 包含重复、链接、加密或不支持的条目")
+			name := strings.TrimSuffix(entry.Name, "/")
+			directory := entry.FileInfo().IsDir()
+			if !safeRelative(name) || folded[strings.ToLower(name)] || entry.Flags&1 != 0 || entry.Mode()&os.ModeSymlink != 0 || entry.Mode()&os.ModeType != 0 && !directory || (entry.Method != zip.Store && entry.Method != zip.Deflate) {
+				return nil, errors.New("ZIP包含危险、重复、链接、加密或不支持的条目")
 			}
-			if name != "manifest.json" && !(strings.HasPrefix(name, "objects/") && hashName.MatchString(strings.TrimPrefix(name, "objects/"))) {
-				return nil, errors.New("ZIP 包含非备份对象或危险路径")
+			if directory && entry.UncompressedSize64 != 0 {
+				return nil, errors.New("ZIP目录包含数据")
 			}
-			if entry.CompressedSize64 > uint64(maxBytes) || entry.CompressedSize64 > uint64(info.Size()) || entry.UncompressedSize64 > uint64(maxBytes) || entry.UncompressedSize64 > entry.CompressedSize64*200+uint64(maxManifest) {
-				return nil, errors.New("ZIP 条目超出展开量或压缩比限制")
+			if name != headerName && name != indexName && name != ".qman" && !strings.HasPrefix(name, "Tencent Files/") && name != "Tencent Files" && !strings.HasPrefix(name, "Media/") && name != "Media" {
+				return nil, errors.New("ZIP含非目录树备份条目")
 			}
-			if name == "manifest.json" && entry.UncompressedSize64 > uint64(maxManifest) {
-				return nil, errors.New("清单超过大小限制")
+			if entry.CompressedSize64 > uint64(info.Size()) || entry.UncompressedSize64 > uint64(maxBytes) || entry.UncompressedSize64 > entry.CompressedSize64*200+maxIndex {
+				return nil, errors.New("ZIP长度或压缩比超限")
 			}
-			names[name] = true
+			if name == headerName && entry.UncompressedSize64 > maxHeader || name == indexName && entry.UncompressedSize64 > maxIndex {
+				return nil, errors.New("ZIP元数据超限")
+			}
 			total += entry.UncompressedSize64
-			if total > uint64(maxBytes)+uint64(maxManifest) {
-				return nil, errors.New("ZIP 展开量超限")
+			if total > uint64(maxBytes)+maxIndex+maxHeader {
+				return nil, errors.New("ZIP展开总量超限")
 			}
+			folded[strings.ToLower(name)] = true
+			names[name] = entry
 		}
-		if !names["manifest.json"] {
-			return nil, errors.New("ZIP 缺少清单")
+		if names[headerName] == nil || names[indexName] == nil {
+			return nil, errors.New("ZIP缺少backup.json或逐文件索引；旧格式未适配")
 		}
-		temporary, err = media.Canonical(temporary)
-		if err != nil {
-			return nil, err
+		temporary, e = media.Canonical(temporary)
+		if e != nil {
+			return nil, e
 		}
-		if err = os.MkdirAll(temporary, 0700); err != nil {
-			return nil, err
+		if e = os.MkdirAll(temporary, 0700); e != nil {
+			return nil, e
 		}
-		free, err := storage.Free(temporary)
-		if err != nil || free < total {
-			return nil, errors.New("ZIP 校验暂存空间不足")
+		free, e := storage.Free(temporary)
+		if e != nil || free < total {
+			return nil, errors.New("ZIP校验暂存空间不足")
 		}
-		root, err = os.MkdirTemp(temporary, ".qman-media-stage-unpack-")
-		if err != nil {
-			return nil, err
+		root, e = os.MkdirTemp(temporary, ".qman-media-stage-unpack-")
+		if e != nil {
+			return nil, e
 		}
 		cleanup = func() { safeRemove(root) }
 		ok := false
@@ -99,30 +102,84 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 				cleanup()
 			}
 		}()
-		if err = storage.Private(root); err != nil {
-			return nil, err
+		if e = storage.Private(root); e != nil {
+			return nil, e
 		}
-		if err = os.Mkdir(filepath.Join(root, "objects"), 0700); err != nil {
-			return nil, err
+		dest, e := os.OpenRoot(root)
+		if e != nil {
+			return nil, e
 		}
-		for _, entry := range reader.File {
-			if err = ctx.Err(); err != nil {
-				return nil, err
+		defer dest.Close()
+		extract := func(name string) error {
+			entry := names[name]
+			if entry == nil || entry.FileInfo().IsDir() {
+				return errors.New("ZIP缺少预期文件")
+			}
+			if e := checkTree(dest, filepath.FromSlash(name), true); e != nil {
+				return e
 			}
 			in, e := entry.Open()
 			if e != nil {
-				return nil, e
+				return e
 			}
-			out, e := os.OpenFile(filepath.Join(root, filepath.FromSlash(entry.Name)), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+			defer in.Close()
+			out, e := dest.OpenFile(filepath.FromSlash(name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 			if e != nil {
-				in.Close()
-				return nil, e
+				return e
 			}
 			n, e := io.CopyBuffer(out, media.CancelReader{Ctx: ctx, Reader: io.LimitReader(in, int64(entry.UncompressedSize64)+1)}, make([]byte, 1024*1024))
-			inErr := in.Close()
-			outErr := out.Close()
-			if e != nil || inErr != nil || outErr != nil || n != int64(entry.UncompressedSize64) {
-				return nil, errors.New("ZIP 解包失败或长度/CRC 错误")
+			ce := out.Close()
+			if e != nil {
+				return e
+			}
+			if ce != nil {
+				return ce
+			}
+			if n != int64(entry.UncompressedSize64) {
+				return errors.New("ZIP展开长度不符")
+			}
+			return nil
+		}
+		if e = extract(headerName); e != nil {
+			return nil, e
+		}
+		if e = extract(indexName); e != nil {
+			return nil, e
+		}
+		m, e := readMetadata(ctx, root)
+		if e != nil {
+			return nil, e
+		}
+		expected, e := expectedTree(m)
+		if e != nil {
+			return nil, e
+		}
+		count := 0
+		for name, entry := range names {
+			if entry.FileInfo().IsDir() {
+				if !expected.Dirs[name] {
+					return nil, errors.New("ZIP含未知目录")
+				}
+				continue
+			}
+			wanted, exists := expected.Files[name]
+			if !exists || wanted.Size >= 0 && uint64(wanted.Size) != entry.UncompressedSize64 {
+				return nil, errors.New("ZIP载荷集合或长度不符")
+			}
+			count++
+		}
+		if count != len(expected.Files) {
+			return nil, errors.New("ZIP缺失载荷")
+		}
+		for name := range expected.Files {
+			if name == headerName || name == indexName {
+				continue
+			}
+			if e = ctx.Err(); e != nil {
+				return nil, e
+			}
+			if e = extract(name); e != nil {
+				return nil, e
 			}
 		}
 		ok = true
@@ -132,29 +189,28 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 		cleanup()
 		return nil, err
 	}
-	mf, err := media.OpenRelative(root, "manifest.json")
-	if err != nil {
+	b, err := json.Marshal(m)
+	if err != nil || len(b) > maxIndex {
 		cleanup()
-		return nil, err
+		return nil, errors.New("备份历史证据超过容量上限")
 	}
-	b, err := io.ReadAll(io.LimitReader(mf, maxManifest+1))
-	mf.Close()
-	if err != nil {
-		cleanup()
-		return nil, err
+	var meta int64
+	for _, name := range []string{headerName, indexName} {
+		i, e := os.Stat(filepath.Join(root, filepath.FromSlash(name)))
+		if e != nil {
+			cleanup()
+			return nil, e
+		}
+		meta += i.Size()
 	}
-	var reread Manifest
-	if len(b) > maxManifest || json.Unmarshal(b, &reread) != nil || !reflect.DeepEqual(m, reread) {
-		cleanup()
-		return nil, errors.New("清单在校验时发生变化")
-	}
-	return &Package{Manifest: m, Items: items, Bytes: b, Root: root, Cleanup: cleanup}, nil
+	return &Package{Manifest: m, Items: items, Bytes: b, Root: root, Cleanup: cleanup, MetadataBytes: meta}, nil
 }
-
-// ZipDirectory preserves the self-contained package and stores compressed media
-// without recompressing. It never loads an entire object into memory.
 func ZipDirectory(ctx context.Context, path string) (string, error) {
 	m, _, err := Open(ctx, path, nil)
+	if err != nil {
+		return "", err
+	}
+	set, err := expectedTree(m)
 	if err != nil {
 		return "", err
 	}
@@ -166,15 +222,13 @@ func ZipDirectory(ctx context.Context, path string) (string, error) {
 	stage := out.Name()
 	defer os.Remove(stage)
 	writer := zip.NewWriter(out)
-	objects := map[string]bool{}
-	names := []string{"manifest.json"}
-	for _, e := range m.Entries {
-		if e.Excluded == "" && !objects[e.SHA256] {
-			objects[e.SHA256] = true
-			names = append(names, "objects/"+e.SHA256)
+	buffer := make([]byte, 1024*1024)
+	for name := range set.Files {
+		if err = ctx.Err(); err != nil {
+			writer.Close()
+			out.Close()
+			return "", err
 		}
-	}
-	for _, name := range names {
 		in, e := media.OpenRelative(path, filepath.FromSlash(name))
 		if e != nil {
 			writer.Close()
@@ -183,7 +237,7 @@ func ZipDirectory(ctx context.Context, path string) (string, error) {
 		}
 		entry, e := writer.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
 		if e == nil {
-			_, e = io.CopyBuffer(entry, media.CancelReader{Ctx: ctx, Reader: in}, make([]byte, 1024*1024))
+			_, e = io.CopyBuffer(entry, media.CancelReader{Ctx: ctx, Reader: in}, buffer)
 		}
 		in.Close()
 		if e != nil {
@@ -193,12 +247,11 @@ func ZipDirectory(ctx context.Context, path string) (string, error) {
 		}
 	}
 	err = writer.Close()
-	syncErr := out.Sync()
-	closeErr := out.Close()
-	if err != nil || syncErr != nil || closeErr != nil {
-		return "", errors.New("ZIP 写入失败")
+	se := out.Sync()
+	ce := out.Close()
+	if err != nil || se != nil || ce != nil {
+		return "", errors.New("ZIP写入失败")
 	}
-	// Verify CRC and SHA-256 through the exact same bounded reader used on import.
 	verified, err := OpenPackage(ctx, stage, parent, nil)
 	if err != nil {
 		return "", err

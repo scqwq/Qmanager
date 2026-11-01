@@ -76,30 +76,47 @@ func (c *Catalog) Eligible(source string, f media.Filter) (int, int64, int, erro
 // Group exclusions with the same precedence as mediabackup.reason, without
 // loading every media payload into the UI process.
 func (c *Catalog) BackupStats(source string, f media.Filter) (int, int64, map[string]int, error) {
+	p, err := c.BackupPlan(source, f)
+	if p.Pending > 0 {
+		p.ExcludedReasons["pending"] = p.Pending
+	}
+	return p.Files, p.Bytes, p.ExcludedReasons, err
+}
+
+type BackupCounts struct {
+	Files, Pending      int
+	Bytes, PendingBytes int64
+	ExcludedReasons     map[string]int
+}
+
+func (c *Catalog) BackupPlan(source string, f media.Filter) (BackupCounts, error) {
+	p := BackupCounts{ExcludedReasons: map[string]int{}}
 	where, args, err := cacheWhere(source, f)
 	if err != nil {
-		return 0, 0, nil, err
+		return p, err
 	}
 	reason := "CASE WHEN c.status<>'recognized' THEN c.status WHEN c.bytes=0 THEN 'empty' WHEN c.role='temporary' THEN 'temporary' WHEN coalesce(json_extract(c.payload,'$.stability'),'')<>'stable_heuristic' THEN 'pending' ELSE '' END"
 	rows, err := c.db.Query("SELECT "+reason+" AS reason,count(*),coalesce(sum(c.bytes),0) FROM media_cache c WHERE "+where+" GROUP BY reason", args...)
 	if err != nil {
-		return 0, 0, nil, err
+		return p, err
 	}
 	defer rows.Close()
-	files, bytes, reasons := 0, int64(0), map[string]int{}
 	for rows.Next() {
 		var why string
 		var count int
 		var size int64
 		if err = rows.Scan(&why, &count, &size); err != nil {
-			return 0, 0, nil, err
+			return p, err
 		}
 		if why == "" {
-			files += count
-			bytes += size
+			p.Files += count
+			p.Bytes += size
+		} else if why == "pending" {
+			p.Pending += count
+			p.PendingBytes += size
 		} else {
-			reasons[why] = count
+			p.ExcludedReasons[why] = count
 		}
 	}
-	return files, bytes, reasons, rows.Err()
+	return p, rows.Err()
 }

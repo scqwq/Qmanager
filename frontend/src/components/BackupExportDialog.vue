@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import {computed,onMounted,onUnmounted,ref,watch} from 'vue'
 import {api,type Filter,type Estimate} from '../api'
-const props=defineProps<{initial:Filter;submitting?:boolean;submitError?:string;monitoring?:boolean}>()
+const props=defineProps<{initial:Filter;submitting?:boolean;submitError?:string;revision?:number}>()
 const emit=defineEmits<{close:[];confirm:[filter:Filter,format:string,path:string]}>()
 const scope=ref('current'),kind=ref(props.initial.kind),format=ref('directory')
 const now=new Date(),currentMonth=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`
 const first=ref(props.initial.month||currentMonth),last=ref(first.value),year=ref(first.value.slice(0,4))
 const estimate=ref<Estimate|null>(null),error=ref(''),loading=ref(false)
 const destination=ref(''),choosing=ref(false),destinationError=ref('')
-let generation=0,disposed=false,timer:ReturnType<typeof setInterval>|undefined
+let generation=0,disposed=false
 const bytes=(v:number)=>`${(v/1024/1024).toLocaleString(undefined,{maximumFractionDigits:1})} MiB`
 const reasons:Record<string,string>={pending:'尚未通过稳定性检查',temporary:'临时资源',empty:'零字节',unknown:'未知格式',invalid_header:'文件头损坏或不支持',unreadable:'无法读取',changed:'扫描时发生变化'}
+const candidates=computed(()=>(estimate.value?.files??0)+(estimate.value?.pending??0))
 const exclusions=computed(()=>Object.entries(estimate.value?.excluded_reasons??{}).filter(([,n])=>n>0))
 const filter=computed<Filter>(()=>{
  const f={...props.initial,kind:kind.value,offset:0}
@@ -33,9 +34,10 @@ watch(filter,()=>void update(),{deep:true})
 onMounted(()=>{
  void update()
  void api().GetBackupDirectory().then(path=>{if(!disposed&&!destination.value)destination.value=path}).catch(e=>{if(!disposed)destinationError.value=String(e)})
- timer=setInterval(()=>{if(!loading.value&&!props.submitting)void update(true)},2000)
+
 })
-onUnmounted(()=>{disposed=true;generation++;if(timer)clearInterval(timer)})
+watch(()=>props.revision,()=>{if(!props.submitting)void update(true)})
+onUnmounted(()=>{disposed=true;generation++})
 </script>
 <template>
 <div class="modal-backdrop" @click.self="!submitting&&emit('close')"><section class="backup-modal backup-form" role="dialog" aria-modal="true" aria-label="创建媒体备份">
@@ -48,12 +50,14 @@ onUnmounted(()=>{disposed=true;generation++;if(timer)clearInterval(timer)})
  <label>保存形式<select aria-label="保存形式" v-model="format" :disabled="submitting"><option value="directory">文件夹</option><option value="zip">ZIP 单文件（便于手动上传网盘）</option></select></label>
  <p v-if="error||submitError" class="notice error" role="alert">{{error||submitError}}</p>
  <p v-if="loading&&!estimate" role="status">正在计算备份范围…</p>
- <dl v-if="estimate"><dt>可备份文件</dt><dd>{{estimate.files}} 个 · {{bytes(estimate.bytes)}}</dd><dt>暂不纳入</dt><dd>{{estimate.excluded}} 项<span v-for="[reason,count] in exclusions" :key="reason" class="backup-exclusion">{{reasons[reason]??reason}}：{{count}} 项</span></dd><dt>临时峰值空间预算</dt><dd>{{bytes(estimate.estimated_peak*(format==='zip'?3:1))}}<small>含清单预留；不是备份成品大小</small></dd></dl>
- <p v-if="estimate&&!estimate.files" class="notice">当前没有可备份文件。<template v-if="estimate.excluded_reasons?.pending">{{monitoring?'监控仍在核对稳定性，数量每 2 秒自动刷新。':'请先关闭此窗口并点击“快速更新”，继续完成稳定性检查后重试。'}}</template><template v-else>请查看排除原因或调整范围。</template></p>
- <p>保留原文件，复制后校验。{{format==='zip'?'ZIP 主要用于打包，不承诺压缩收益；创建时需同时保留目录载荷、ZIP 和校验暂存，峰值预算因此更高。':'请整体保留备份文件夹。'}}备份不加密。</p>
+ <dl v-if="estimate"><dt>可直接备份</dt><dd>{{estimate.files}} 个 · {{bytes(estimate.bytes)}}</dd><dt>待核对后备份</dt><dd>{{estimate.pending??0}} 个 · {{bytes(estimate.pending_bytes??0)}}</dd><dt>不纳入</dt><dd>{{estimate.excluded}} 项<span v-for="[reason,count] in exclusions" :key="reason" class="backup-exclusion">{{reasons[reason]??reason}}：{{count}} 项</span></dd><dt>临时峰值空间预算</dt><dd>{{bytes(estimate.estimated_peak*(format==='zip'?3:1))}}<small>按候选副本与索引估算；实际分配空间可能不同</small></dd></dl>
+ <p v-if="estimate?.pending" class="notice">开始后只核对本次选中的文件，再复制并校验，无需等待全账号检查。变化、不可读或仍不稳定的项目会明确报告。</p>
+ <p v-else-if="estimate&&!candidates" class="notice">当前没有可备份文件，请查看排除原因或调整范围。</p>
+ <button class="text-button" :disabled="loading||submitting" @click="update()">{{loading?'正在盘点…':'刷新盘点'}}</button>
+ <p>按原目录树逐路径复制，同内容文件也各存一份。保留原文件，复制后校验。{{format==='zip'?'ZIP 主要用于打包，不承诺压缩收益；创建时需同时保留目录载荷、ZIP 和校验暂存，峰值预算因此更高。':'请整体保留备份文件夹。'}}备份不加密。</p>
  <div class="backup-destination"><label>保存目录<input aria-label="备份保存目录" :value="destination" readonly placeholder="请选择 QQ 数据目录以外的位置" :title="destination"/></label><button class="secondary" :disabled="choosing||submitting" @click="choose">{{choosing?'正在选择…':'选择保存目录'}}</button></div>
  <p v-if="destinationError" class="notice error" role="alert">{{destinationError}}</p>
  <small>上次选择的保存目录会自动记住，可在目录窗口中新建文件夹。</small>
- <div class="modal-actions"><button class="secondary" :disabled="submitting" @click="emit('close')">取消</button><button class="primary" :disabled="submitting||choosing||!estimate?.files||!destination||!!error" @click="emit('confirm',filter,format,destination)">{{submitting?'正在准备…':'开始备份'}}</button></div>
+ <div class="modal-actions"><button class="secondary" :disabled="submitting" @click="emit('close')">取消</button><button class="primary" :disabled="submitting||choosing||!candidates||!destination||!!error" @click="emit('confirm',filter,format,destination)">{{submitting?'正在准备…':'核对并备份'}}</button></div>
 </section></div>
 </template>

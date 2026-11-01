@@ -24,22 +24,6 @@ func (c *Catalog) KnownPaths(ctx context.Context, source string) (map[string]boo
 	}
 	return out, rows.Err()
 }
-func (c *Catalog) PendingPaths(ctx context.Context, source string, limit int) ([]string, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT c.path FROM media_cache c JOIN instances i ON i.id=c.id WHERE c.source=? AND json_extract(c.payload,'$.stability')='pending' AND c.status='recognized' AND c.bytes>0 AND c.role<>'temporary' ORDER BY i.seen,c.path LIMIT ?`, source, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []string{}
-	for rows.Next() {
-		var path string
-		if err = rows.Scan(&path); err != nil {
-			return nil, err
-		}
-		out = append(out, path)
-	}
-	return out, rows.Err()
-}
 
 // Partial passes read only the current rows they actually checked. In
 // particular, an empty name-only pass never decodes every cached JSON payload.

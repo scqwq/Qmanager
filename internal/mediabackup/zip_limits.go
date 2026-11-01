@@ -64,7 +64,7 @@ func checkZIPDirectory(reader io.ReaderAt, size int64) error {
 		directoryBytes = binary.LittleEndian.Uint64(record[40:48])
 		offset = binary.LittleEndian.Uint64(record[48:56])
 	}
-	if count > uint64(media.MaxFiles+1) || directoryBytes > 64*1024*1024 || offset > uint64(size) || directoryBytes > uint64(size)-offset {
+	if count > uint64(media.MaxFiles+maxDirectories+34) || directoryBytes > 128*1024*1024 || offset > uint64(size) || directoryBytes > uint64(size)-offset {
 		return fail
 	}
 	return nil

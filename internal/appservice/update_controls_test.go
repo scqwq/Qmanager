@@ -53,7 +53,7 @@ func TestStopUpdateKeepsIndexAndStopsUntilExplicitResume(t *testing.T) {
 	}
 }
 
-func TestBackgroundStabilityDoesNotShowForegroundScanAndEstimateRefreshes(t *testing.T) {
+func TestPendingBackupStartsWithoutWaitingForGlobalStability(t *testing.T) {
 	s, _, source, _ := managerFixture(t)
 	testfixture.Image(source.Resolved, "Pic/2026-10/Ori/new.png")
 	revision := s.State().Revision
@@ -63,41 +63,18 @@ func TestBackgroundStabilityDoesNotShowForegroundScanAndEstimateRefreshes(t *tes
 	waitUpdate(t, s, revision)
 	f := media.Filter{Month: "2026-10"}
 	p, err := s.BackupEstimate(f)
-	if err != nil || p.Files != 0 || p.ExcludedReasons["pending"] != 1 || p.EstimatedPeak != 0 {
-		t.Fatal("missing pending explanation", p, err)
+	if err != nil || p.Files != 0 || p.Pending != 1 || p.Excluded != 0 || p.EstimatedPeak == 0 {
+		t.Fatal(p, err)
 	}
-	target := t.TempDir()
-	if _, err = s.RememberBackupDirectory(target); err != nil {
-		t.Fatal(err)
+	if err = s.BackupFormat(context.Background(), t.TempDir(), f, "directory"); err != nil {
+		t.Fatal("pending candidate blocked backup", err)
 	}
-	// A rejected empty backup must leave observation running so it can stabilize.
-	if err = s.BackupFormat(context.Background(), target, f, "directory"); err == nil {
-		t.Fatal("pending backup accepted")
+	waitBackupJob(t, s)
+	state := s.State()
+	if state.Error != "" || state.Backup == nil || state.Backup.Files != 1 || state.Watching {
+		t.Fatal(state.Error, state.Backup)
 	}
-	if !s.State().Watching {
-		t.Fatal("failed preflight stopped stabilization")
-	}
-	deadline := time.Now().Add(9 * time.Second)
-	for time.Now().Before(deadline) {
-		state := s.State()
-		if state.UpdateRunning || state.Phase == "scanning" {
-			t.Fatal("background work reused foreground progress", state.BackgroundStage)
-		}
-		p, err = s.BackupEstimate(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if p.Files == 1 {
-			if p.Excluded != 0 || p.EstimatedPeak == 0 {
-				t.Fatal(p)
-			}
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("estimate did not become eligible", s.State().Error)
 }
-
 func TestBackupDestinationMemoryAndSourceIsolation(t *testing.T) {
 	s, _, source, _ := managerFixture(t)
 	for _, bad := range []string{source.Resolved, filepath.Dir(source.Resolved), s.private} {

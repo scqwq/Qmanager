@@ -31,10 +31,15 @@ func (s *Media) PreviewHistoryBackup(ctx context.Context, id string) (BackupPrev
 		return BackupPreview{}, err
 	}
 	preview, e := s.PreviewBackup(ctx, row.Path, row.ID)
-	if e != nil && row.DeletePath == "" {
-		row.Status = "unavailable"
-		row.Detail = e.Error()
-		_ = s.catalog.SaveBackup(row)
+	if e != nil {
+		s.op.Lock()
+		current, lookupErr := s.catalog.Backup(id)
+		if lookupErr == nil && current.DeletePath == "" && current.Status != "deleted" {
+			current.Status = "unavailable"
+			current.Detail = e.Error()
+			_ = s.catalog.SaveBackup(current)
+		}
+		s.op.Unlock()
 	}
 	return preview, e
 }
@@ -60,23 +65,30 @@ func (s *Media) registerBackup(ctx context.Context, path string, expectedID ...s
 		row.Format = "zip"
 		row.Bytes = info.Size()
 	}
-	objects := map[string]bool{}
 	for _, e := range m.Entries {
 		if e.Excluded == "" {
 			row.Files++
-			if row.Format == "directory" && !objects[e.SHA256] {
+			if row.Format == "directory" {
 				row.Bytes += e.Item.Bytes
-				objects[e.SHA256] = true
 			}
 		}
 	}
 	if row.Format == "directory" {
-		row.Bytes += int64(len(pack.Bytes))
+		row.Bytes += pack.MetadataBytes
 	}
 	err = s.catalog.SaveBackup(row)
 	return row, err
 }
-func (s *Media) Backups() ([]catalog.BackupRecord, error) { return s.catalog.Backups() }
+func (s *Media) Backups() ([]catalog.BackupRecord, error) {
+	rows, err := s.catalog.Backups()
+	if err != nil {
+		return nil, err
+	}
+	for n := range rows {
+		observeBackupLocation(&rows[n])
+	}
+	return rows, nil
+}
 func (s *Media) PreviewBackup(parent context.Context, path string, expectedID ...string) (BackupPreview, error) {
 	s.op.Lock()
 	defer s.op.Unlock()
@@ -357,7 +369,10 @@ func (s *Media) DeleteBackups(parent context.Context, ids []string) error {
 				return e
 			}
 			if row.Status == "deleted" {
-				continue
+				observeBackupLocation(&row)
+				if row.LocalState == "missing" {
+					continue
+				}
 			}
 			e = s.deleteBackup(ctx, &row, protected)
 			if e != nil {
@@ -366,7 +381,11 @@ func (s *Media) DeleteBackups(parent context.Context, ids []string) error {
 				failures++
 			} else {
 				row.Status = "deleted"
-				row.Detail = "本地备份包已删除；本操作未连带清理源文件或已恢复副本"
+				if row.LocalState == "missing" {
+					row.Detail = "登记位置已无备份包，本次未执行磁盘删除；若已移动可重新定位。历史保留，未清理原文件或独立副本"
+				} else {
+					row.Detail = "本地备份包已删除；本操作未连带清理源文件或已恢复副本"
+				}
 				row.DeletePath = ""
 			}
 			if err = s.catalog.SaveBackup(row); err != nil {
@@ -394,21 +413,34 @@ func (s *Media) deleteBackup(ctx context.Context, row *catalog.BackupRecord, pro
 		}
 	}
 	if row.DeletePath != "" {
+		if filepath.Dir(row.DeletePath) != filepath.Dir(path) || !strings.HasPrefix(filepath.Base(row.DeletePath), ".qman-delete-") {
+			return errors.New("删除日志无效")
+		}
 		if _, e := media.Canonical(row.DeletePath); e != nil {
 			return e
 		}
 		if _, e := os.Lstat(row.DeletePath); os.IsNotExist(e) {
+			if e = accessibleBackupParent(row.DeletePath); e != nil {
+				return e
+			}
 			if _, originalErr := os.Lstat(path); originalErr == nil {
 				row.DeletePath = ""
 			} else if !os.IsNotExist(originalErr) {
 				return originalErr
+			} else {
+				row.LocalState = "missing"
+				return nil
 			}
 		}
 	}
 	if row.DeletePath == "" {
 		pinned, e := media.OpenRelative(filepath.Dir(path), filepath.Base(path))
 		if os.IsNotExist(e) {
-			return errors.New("备份位置不可用；移动后请重新定位，不会搜索或删除其他位置")
+			if e = accessibleBackupParent(path); e != nil {
+				return e
+			}
+			row.LocalState = "missing"
+			return nil
 		}
 		if e != nil {
 			return e
@@ -417,6 +449,9 @@ func (s *Media) deleteBackup(ctx context.Context, row *catalog.BackupRecord, pro
 		info, e := pinned.Stat()
 		if e != nil {
 			return e
+		}
+		if row.Format == "directory" && !info.IsDir() || row.Format == "zip" && !info.Mode().IsRegular() {
+			return errors.New("备份位置对象类型已变化，请重新定位并校验")
 		}
 		pack, e := mediabackup.OpenPackage(ctx, path, filepath.Join(s.private, "temporary"), nil)
 		if e != nil {

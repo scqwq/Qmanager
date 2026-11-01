@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"qqarchive/internal/catalog"
 	"qqarchive/internal/media"
-	"qqarchive/internal/mediabackup"
 	"qqarchive/internal/testfixture"
 	"reflect"
 	"testing"
@@ -266,17 +265,34 @@ func TestInterruptedEmptyQuarantineCanFinish(t *testing.T) {
 	}
 	// Model a crash after every validated member was removed, before the final
 	// empty directory and completion record were removed.
-	objectPaths, err := filepath.Glob(filepath.Join(row.DeletePath, "objects", "*"))
+	files, dirs := []string{}, []string{}
+	err := filepath.WalkDir(row.DeletePath, func(path string, d os.DirEntry, e error) error {
+		if e != nil {
+			return e
+		}
+		if path == row.DeletePath {
+			return nil
+		}
+		if d.IsDir() {
+			dirs = append(dirs, path)
+		} else {
+			files = append(files, path)
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range objectPaths {
+	for _, path := range files {
 		if err = os.Remove(path); err != nil {
 			t.Fatal(err)
 		}
 	}
-	os.Remove(filepath.Join(row.DeletePath, "objects"))
-	os.Remove(filepath.Join(row.DeletePath, "manifest.json"))
+	for n := len(dirs) - 1; n >= 0; n-- {
+		if err = os.Remove(dirs[n]); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err = s.DeleteBackups(context.Background(), []string{row.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -298,16 +314,16 @@ func TestHistoryDoesNotFollowDifferentBackupAtOldPath(t *testing.T) {
 		t.Fatal(s.State().Error)
 	}
 	row := rows[0]
-	path := filepath.Join(row.Path, "manifest.json")
+	path := filepath.Join(row.Path, "backup.json")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var m mediabackup.Manifest
+	var m map[string]json.RawMessage
 	if err = json.Unmarshal(b, &m); err != nil {
 		t.Fatal(err)
 	}
-	m.ID = "different-synthetic-backup"
+	m["id"] = json.RawMessage(`"different-synthetic-backup"`)
 	b, _ = json.Marshal(m)
 	if err = os.WriteFile(path, b, 0600); err != nil {
 		t.Fatal(err)

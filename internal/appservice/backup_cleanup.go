@@ -2,6 +2,7 @@ package appservice
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,14 +56,14 @@ func (s *Media) PrepareBackupSourceDelete(parent context.Context, ids []string) 
 				return err
 			}
 			metadata += len(row.Manifest)
-			if metadata > 64*1024*1024 {
+			if metadata > 128*1024*1024 {
 				return errors.New("所选历史清单过大，请分批清理")
 			}
 			if catalog.ManifestDigest([]byte(row.Manifest)) != row.Digest {
 				return errors.New("备份历史清单校验不符，未清理")
 			}
 			var manifest mediabackup.Manifest
-			if err = json.Unmarshal([]byte(row.Manifest), &manifest); err != nil || manifest.Format != "qman-media-directory" || manifest.Version != 1 || manifest.ID != id || manifest.SourceID == "" || len(manifest.Entries) > media.MaxFiles {
+			if err = json.Unmarshal([]byte(row.Manifest), &manifest); err != nil || manifest.Format != mediabackup.Format || manifest.Version != mediabackup.Version || manifest.ID != id || manifest.SourceID == "" || len(manifest.Entries) > media.MaxFiles {
 				return errors.New("备份历史清单无效或不受支持")
 			}
 			if sourceID == "" {
@@ -182,6 +183,10 @@ func (s *Media) recordBackupSourceCleanup(job catalog.CleanupJob) error {
 	detail := fmt.Sprintf("%s；联合清单：回收 %d，跳过 %d，失败 %d，待核对 %d，未处理 %d", label, job.Recycled, job.Skipped, job.Failed, job.Uncertain, job.Ready+job.Pending)
 	for _, id := range job.BackupIDs {
 		row, err := s.catalog.Backup(id)
+		if errors.Is(err, sql.ErrNoRows) {
+			// Explicitly forgotten history must not be recreated by audit recovery.
+			continue
+		}
 		if err != nil {
 			return err
 		}

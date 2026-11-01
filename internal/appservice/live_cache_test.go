@@ -38,13 +38,15 @@ func TestNativeAdditionUpdatesCacheWithoutRescanningOtherMonths(t *testing.T) {
 		t.Fatal("baseline did not finish")
 	}
 	lastFull := s.State().LastFullScan
+	revision := s.State().Revision
 	if err = testfixture.Image(root, "Pic/2026-09/Ori/new.jpg"); err != nil {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		p := s.Page(media.Filter{})
-		if p.Total == 3 {
+		// The projection commits before the observer publishes its next state.
+		if p.Total == 3 && s.State().Revision > revision {
 			r := s.State().Report
 			if !r.Partial || !s.State().LastFullScan.Equal(lastFull) {
 				t.Fatal("native update incorrectly used a full scan")

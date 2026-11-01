@@ -4,16 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"qqarchive/internal/catalog"
 	"qqarchive/internal/media"
+	"reflect"
 )
 
-// DeleteQuarantined only removes the validated package set. It never recursively
-// removes a directory and does not interpret source-relative paths as targets.
-// The caller journals the unique quarantine path before moving anything.
+// Only journalled quarantine members are removed; never recursively delete a
+// tree, follow a link, or accept an unknown addition. Missing known members are
+// allowed so a cancelled or crashed deletion can be continued explicitly.
 func DeleteQuarantined(ctx context.Context, row catalog.BackupRecord) error {
 	if row.DeletePath == "" || filepath.Dir(row.DeletePath) != filepath.Dir(row.Path) {
 		return errors.New("删除暂存位置无效")
@@ -36,117 +36,133 @@ func DeleteQuarantined(ctx context.Context, row catalog.BackupRecord) error {
 	defer parent.Close()
 	leaf := filepath.Base(path)
 	if row.Format == "zip" {
-		f, err := parent.Open(leaf)
-		if err != nil {
-			return err
-		}
-		before, err := f.Stat()
-		f.Close()
-		if err != nil || !os.SameFile(info, before) {
-			return errors.New("删除对象已变化")
-		}
-		loaded, err := OpenPackage(ctx, path, filepath.Dir(path), nil)
-		if err != nil {
-			return err
+		loaded, e := OpenPackage(ctx, path, filepath.Dir(path), nil)
+		if e != nil {
+			return e
 		}
 		defer loaded.Cleanup()
 		if catalog.ManifestDigest(loaded.Bytes) != row.Digest {
-			return errors.New("备份清单身份不符")
+			return errors.New("备份身份不符")
+		}
+		current, e := parent.Stat(leaf)
+		if e != nil || !os.SameFile(info, current) {
+			return errors.New("删除对象已变化")
 		}
 		return parent.Remove(leaf)
+	}
+	var m Manifest
+	if catalog.ManifestDigest([]byte(row.Manifest)) != row.Digest || json.Unmarshal([]byte(row.Manifest), &m) != nil {
+		return errors.New("登记证据无效")
+	}
+	expected, err := expectedTree(m)
+	if err != nil {
+		return err
+	}
+	files, dirs, err := inspectTree(ctx, path, expected, true)
+	if err != nil {
+		return err
 	}
 	root, err := parent.OpenRoot(leaf)
 	if err != nil {
 		return err
 	}
 	defer root.Close()
-	var m Manifest
-	if err = json.Unmarshal([]byte(row.Manifest), &m); err != nil {
-		return err
+	pinned, err := root.Stat(".")
+	if err != nil || !os.SameFile(info, pinned) {
+		return errors.New("删除目录身份变化")
 	}
-	expected := map[string]int64{}
-	for _, e := range m.Entries {
-		if e.Excluded == "" {
-			expected[e.SHA256] = e.Item.Bytes
-		}
-	}
-	// Refuse any newly added files before removing any member.
-	dir, err := root.Open(".")
-	if err != nil {
-		return err
-	}
-	entries, err := dir.ReadDir(4)
-	dir.Close()
-	if err != nil && err != io.EOF {
-		return err
-	}
-	for _, e := range entries {
-		if e.Name() != "objects" && e.Name() != "manifest.json" {
-			return errors.New("备份含新增文件，拒绝删除")
-		}
-	}
-	if f, e := media.OpenRelative(path, "manifest.json"); e == nil {
-		b, readErr := io.ReadAll(io.LimitReader(f, maxManifest+1))
-		f.Close()
-		if readErr != nil || len(b) > maxManifest || catalog.ManifestDigest(b) != row.Digest {
-			return errors.New("备份清单已变化")
-		}
-	} else if !os.IsNotExist(e) {
-		return e
-	}
-	objects, err := root.OpenRoot("objects")
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if objects != nil {
-		defer objects.Close()
-		dir, err = objects.Open(".")
-		if err != nil {
-			return err
-		}
-		defer dir.Close()
-		names := []string{}
-		for {
-			batch, e := dir.ReadDir(128)
-			for _, de := range batch {
-				size, ok := expected[de.Name()]
-				if !ok || !de.Type().IsRegular() {
-					return errors.New("备份对象集合发生变化")
-				}
-				same, e := sameContent(ctx, objects, de.Name(), de.Name(), size)
-				if e != nil || !same {
-					return errors.New("备份对象已变化，停止删除")
-				}
-				names = append(names, de.Name())
-			}
-			if len(batch) == 0 {
-				break
+	checkMetadata := func(name string) error {
+		if name == headerName {
+			b, e := readSmall(ctx, path, name, maxHeader)
+			if os.IsNotExist(e) {
+				return nil
 			}
 			if e != nil {
 				return e
 			}
+			var h header
+			if decodeStrict(b, &h) != nil || !reflect.DeepEqual(h, m.head()) {
+				return errors.New("备份说明已变化")
+			}
+			return nil
 		}
-		for _, name := range names {
-			if err = ctx.Err(); err != nil {
+		i, e := root.Stat(filepath.FromSlash(name))
+		if os.IsNotExist(e) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		if i.Size() > maxIndex {
+			return errors.New("备份索引超限")
+		}
+		same, e := sameContent(ctx, root, filepath.FromSlash(name), m.IndexSHA256, i.Size())
+		if e != nil {
+			return e
+		}
+		if !same {
+			return errors.New("备份索引已变化")
+		}
+		return nil
+	}
+	for _, name := range files {
+		if name == headerName || name == indexName {
+			if err = checkMetadata(name); err != nil {
 				return err
 			}
-			same, e := sameContent(ctx, objects, name, name, expected[name])
-			if e != nil || !same {
-				return errors.New("删除前对象发生变化")
-			}
-			if err = objects.Remove(name); err != nil {
-				return err
-			}
+			continue
 		}
-		dir.Close()
-		objects.Close()
-		if err = root.Remove("objects"); err != nil {
+		wanted := expected.Files[name]
+		same, e := sameContent(ctx, root, filepath.FromSlash(name), wanted.Hash, wanted.Size)
+		if e != nil {
+			return e
+		}
+		if !same {
+			return errors.New("备份载荷已变化，停止删除")
+		}
+	}
+	for _, name := range files {
+		if name == headerName || name == indexName {
+			continue
+		}
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		wanted := expected.Files[name]
+		same, e := sameContent(ctx, root, filepath.FromSlash(name), wanted.Hash, wanted.Size)
+		if e != nil {
+			return e
+		}
+		if !same {
+			return errors.New("删除前载荷变化")
+		}
+		if err = root.Remove(filepath.FromSlash(name)); err != nil {
 			return err
 		}
 	}
-	if err = root.Remove("manifest.json"); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, name := range []string{indexName, headerName} {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		if err = checkMetadata(name); err != nil {
+			return err
+		}
+		if err = root.Remove(filepath.FromSlash(name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	for n := len(dirs) - 1; n >= 0; n-- {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		if err = root.Remove(filepath.FromSlash(dirs[n])); err != nil {
+			return err
+		}
 	}
 	root.Close()
+	current, err := parent.Stat(leaf)
+	if err != nil || !os.SameFile(info, current) {
+		return errors.New("删除目录在执行时被替换")
+	}
 	return parent.Remove(leaf)
 }

@@ -133,7 +133,7 @@ func (a *App) ChooseBackup(expectedID string) (*appservice.BackupPreview, error)
 	if choice == "ZIP 文件" {
 		path, err = runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择 Qman ZIP 备份", Filters: []runtime.FileFilter{{DisplayName: "Qman ZIP 备份", Pattern: "*.zip"}}, DefaultDirectory: a.dialogDirectory("backup_directory")})
 	} else {
-		path, err = runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择含 manifest.json 的备份目录", DefaultDirectory: a.dialogDirectory("backup_directory")})
+		path, err = runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择含 backup.json、.qman 和媒体目录树的备份目录", DefaultDirectory: a.dialogDirectory("backup_directory")})
 	}
 	if err != nil || path == "" {
 		return nil, err
@@ -153,9 +153,10 @@ func (a *App) PreviewHistoryBackup(id string) (appservice.BackupPreview, error) 
 func (a *App) ChooseRestoreTarget() (string, error) {
 	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择最外层 Tencent Files（按备份内账号路径补回）", DefaultDirectory: a.dialogDirectory("restore_directory")})
 }
-func (a *App) LoadBackup(id, target string) error { return a.media.RestoreBackup(a.ctx, id, target) }
-func (a *App) ViewLoadedBackup(id string) error   { return a.media.ViewLoadedBackup(a.ctx, id) }
-func (a *App) DeleteBackups(ids []string) error   { return a.media.DeleteBackups(a.ctx, ids) }
+func (a *App) LoadBackup(id, target string) error  { return a.media.RestoreBackup(a.ctx, id, target) }
+func (a *App) ViewLoadedBackup(id string) error    { return a.media.ViewLoadedBackup(a.ctx, id) }
+func (a *App) DeleteBackups(ids []string) error    { return a.media.DeleteBackups(a.ctx, ids) }
+func (a *App) DeleteBackupHistory(id string) error { return a.media.DeleteBackupHistory(a.ctx, id) }
 func (a *App) PrepareMediaDelete(request appservice.CleanupRequest) error {
 	return a.media.PrepareMediaDelete(a.ctx, request)
 }
@@ -168,7 +169,7 @@ func (a *App) GetMediaDeleteItems(id string, offset, limit int) ([]catalog.Clean
 	return a.media.CleanupItems(id, offset, limit)
 }
 func (a *App) OpenBackup() error {
-	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择含 manifest.json 的 Qman 媒体备份目录"})
+	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择含 backup.json、.qman 和媒体目录树的备份目录"})
 	if err != nil || path == "" {
 		return err
 	}

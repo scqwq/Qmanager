@@ -46,14 +46,14 @@ func fixture(t *testing.T) (media.Source, []media.Item, *catalog.Catalog) {
 	}
 	return source, r.Items, c
 }
-func TestIndependentBackupDedupAndTamper(t *testing.T) {
+func TestIndependentTreeBackupCopiesAndTamper(t *testing.T) {
 	source, items, c := fixture(t)
 	before, _ := testfixture.Snapshot(source.Resolved)
 	out, err := Build(context.Background(), source, items, media.Filter{Month: "2026-09"}, t.TempDir(), nil, c.History, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Files != 2 || out.UniqueObjects != 1 || out.Excluded != 1 {
+	if out.Files != 2 || out.PayloadFiles != 2 || out.Excluded != 1 {
 		t.Fatalf("unexpected result %+v", out)
 	}
 	after, _ := testfixture.Snapshot(source.Resolved)
@@ -86,7 +86,8 @@ func TestIndependentBackupDedupAndTamper(t *testing.T) {
 	}
 	for _, entry := range m.Entries {
 		if entry.SHA256 != "" {
-			if err = os.WriteFile(filepath.Join(out.Path, "objects", entry.SHA256), []byte("tampered"), 0600); err != nil {
+			rel, _ := PayloadPath(m, entry)
+			if err = os.WriteFile(filepath.Join(out.Path, filepath.FromSlash(rel)), []byte("tampered"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			break
@@ -115,13 +116,12 @@ func TestCancelIsolationAndUnsafeManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(out.Path, "manifest.json")
-	b, _ := os.ReadFile(path)
-	var m Manifest
-	json.Unmarshal(b, &m)
+	m, err := readMetadata(context.Background(), out.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	m.Entries[0].Item.RelativePath = "../escape"
-	b, _ = json.Marshal(m)
-	os.WriteFile(path, b, 0600)
+	rewriteMetadata(t, out.Path, m)
 	if _, _, err = Open(context.Background(), out.Path, nil); err == nil {
 		t.Fatal("unsafe metadata accepted")
 	}

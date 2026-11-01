@@ -9,6 +9,17 @@ import (
 	"testing"
 )
 
+func rewriteMetadata(t *testing.T, path string, m Manifest) {
+	t.Helper()
+	for _, p := range []string{indexName, headerName, ".qman"} {
+		if err := os.Remove(filepath.Join(path, filepath.FromSlash(p))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writeMetadata(context.Background(), path, &m); err != nil {
+		t.Fatal(err)
+	}
+}
 func TestRejectVersionDuplicateMissingAndExtraObjects(t *testing.T) {
 	for _, variant := range []string{"version", "duplicate", "missing", "extra", "wrong_length"} {
 		t.Run(variant, func(t *testing.T) {
@@ -17,45 +28,44 @@ func TestRejectVersionDuplicateMissingAndExtraObjects(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join(out.Path, "manifest.json")
-			original, err := os.ReadFile(path)
+			m, err := readMetadata(context.Background(), out.Path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var m Manifest
-			if err = json.Unmarshal(original, &m); err != nil {
-				t.Fatal(err)
-			}
 			included := -1
-			for i, entry := range m.Entries {
-				if entry.SHA256 != "" {
+			for i, e := range m.Entries {
+				if e.Excluded == "" {
 					included = i
 					break
 				}
 			}
 			if included < 0 {
-				t.Fatal("fixture has no copied objects")
+				t.Fatal("no payload")
 			}
+			rel, _ := PayloadPath(m, m.Entries[included])
 			switch variant {
 			case "version":
-				m.Version = 99
+				h := m.head()
+				h.Version = 99
+				b, _ := json.Marshal(h)
+				os.WriteFile(filepath.Join(out.Path, headerName), b, 0600)
 			case "duplicate":
 				m.Entries = append(m.Entries, m.Entries[0])
+				rewriteMetadata(t, out.Path, m)
 			case "missing":
-				if err = os.Remove(filepath.Join(out.Path, "objects", m.Entries[included].SHA256)); err != nil {
+				if err = os.Remove(filepath.Join(out.Path, filepath.FromSlash(rel))); err != nil {
 					t.Fatal(err)
 				}
 			case "extra":
-				os.WriteFile(filepath.Join(out.Path, "objects", "unexpected"), []byte("extra"), 0600)
+				if err = os.WriteFile(filepath.Join(out.Path, "unexpected"), []byte("extra"), 0600); err != nil {
+					t.Fatal(err)
+				}
 			case "wrong_length":
 				m.Entries[included].Item.Bytes++
-			}
-			changed, _ := json.Marshal(m)
-			if err = os.WriteFile(path, changed, 0600); err != nil {
-				t.Fatal(err)
+				rewriteMetadata(t, out.Path, m)
 			}
 			if _, _, err = Open(context.Background(), out.Path, nil); err == nil {
-				t.Fatal("accepted invalid backup", variant)
+				t.Fatal("accepted invalid tree", variant)
 			}
 		})
 	}

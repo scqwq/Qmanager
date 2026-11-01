@@ -282,7 +282,10 @@ func Restore(ctx context.Context, m Manifest, items []media.Item, target, fallba
 			if ctx.Err() != nil {
 				return result, ctx.Err()
 			}
-			path = "objects/" + e.SHA256
+			path, err = PayloadPath(m, e)
+			if err != nil {
+				return result, err
+			}
 			err = checkTree(library, filepath.FromSlash(path), true)
 			if err == nil {
 				var exists bool

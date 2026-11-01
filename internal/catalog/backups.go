@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -11,6 +12,9 @@ import (
 )
 
 type BackupRecord struct {
+	LocalState          string          `json:"local_state,omitempty"`
+	LocalDetail         string          `json:"local_detail,omitempty"`
+	LocationCheckedAt   *time.Time      `json:"location_checked_at,omitempty"`
 	SourceCleanupJob    string          `json:"source_cleanup_job,omitempty"`
 	SourceCleanupDetail string          `json:"source_cleanup_detail,omitempty"`
 	ID                  string          `json:"id"`
@@ -75,6 +79,9 @@ func (c *Catalog) Backups() ([]BackupRecord, error) {
 	return out, rows.Err()
 }
 func (c *Catalog) SaveBackup(row BackupRecord) error {
+	// Location observations are a live UI projection, not durable proof of
+	// deletion, package integrity, or cloud verification.
+	row.LocalState, row.LocalDetail, row.LocationCheckedAt = "", "", nil
 	previous, err := c.Backup(row.ID)
 	if err == nil && previous.Digest != row.Digest {
 		return errors.New("同一备份编号对应不同清单，拒绝替换记录")
@@ -86,7 +93,7 @@ func (c *Catalog) SaveBackup(row BackupRecord) error {
 	if err == nil && row.Manifest == "" {
 		row.Manifest = previous.Manifest
 	}
-	if len(row.Manifest) > 32*1024*1024 || !json.Valid([]byte(row.Manifest)) || ManifestDigest([]byte(row.Manifest)) != row.Digest {
+	if len(row.Manifest) > 128*1024*1024 || !json.Valid([]byte(row.Manifest)) || ManifestDigest([]byte(row.Manifest)) != row.Digest {
 		return errors.New("备份登记清单无效或校验摘要不符")
 	}
 	if err != nil && !isNoRows(err) {
@@ -112,8 +119,67 @@ func (c *Catalog) SaveBackup(row BackupRecord) error {
 	return err
 }
 func ManifestDigest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+// DeleteBackupHistory removes only the selected registry row. Imports, restored
+// evidence and cleanup audits are independent records and must remain intact.
+func (c *Catalog) DeleteBackupHistory(ctx context.Context, id, digest string) ([]string, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var payload string
+	if err = tx.QueryRowContext(ctx, "SELECT payload FROM backup_records WHERE id=?", id).Scan(&payload); err != nil {
+		return nil, err
+	}
+	var row storedBackup
+	if err = json.Unmarshal([]byte(payload), &row); err != nil {
+		return nil, err
+	}
+	if row.Record.Status != "deleted" || row.DeletePath != "" || row.Record.Digest != digest {
+		return nil, errors.New("请先完成本地备份包删除，再删除历史记录")
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,state FROM cleanup_jobs WHERE state IN ('preparing','prepared','running')
+AND EXISTS (SELECT 1 FROM json_each(cleanup_jobs.payload,'$.backup_ids') WHERE value=?)`, id)
+	if err != nil {
+		return nil, err
+	}
+	invalidated := []string{}
+	for rows.Next() {
+		var job, state string
+		if err = rows.Scan(&job, &state); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if state != "prepared" {
+			rows.Close()
+			return nil, errors.New("关联原文件清理任务仍在进行，请等待任务结束")
+		}
+		invalidated = append(invalidated, job)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	for _, job := range invalidated {
+		if _, err = tx.ExecContext(ctx, "UPDATE cleanup_jobs SET state='interrupted' WHERE id=?", job); err != nil {
+			return nil, err
+		}
+		// A prepared job may combine several backups. Keep their latest result
+		// accurate while revoking this shared, unexecuted confirmation.
+		if _, err = tx.ExecContext(ctx, `UPDATE backup_records SET payload=json_set(payload,'$.record.source_cleanup_detail',?)
+WHERE json_extract(payload,'$.record.source_cleanup_job')=?`, "关联预检因删除备份历史而失效，尚未执行；如需清理请重新预检", job); err != nil {
+			return nil, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM backup_records WHERE id=?", id); err != nil {
+		return nil, err
+	}
+	return invalidated, tx.Commit()
+}
 func (c *Catalog) SaveImport(id string, payload []byte) error {
-	if len(payload) > 64*1024*1024 {
+	if len(payload) > 192*1024*1024 {
 		return errors.New("加载结果超过容量上限")
 	}
 	if info, e := os.Stat(c.path); e == nil && info.Size()+int64(len(payload)) > 512*1024*1024 {

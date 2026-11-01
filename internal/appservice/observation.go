@@ -67,6 +67,8 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 	}
 	covered := w.Complete
 	needsFull := false
+	gapCount := 0
+	gapReason := ""
 	created := map[string]time.Time{}
 	dirty := map[string]bool{}
 	force := map[string]bool{}
@@ -74,6 +76,8 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 	initial := true
 	lastActivity := time.Now()
 	recordGap := func(reason string) {
+		gapCount++
+		gapReason = reason
 		covered = false
 		needsFull = true
 		if e := s.catalog.Gap(source.ID, reason, lastActivity, time.Now().UTC()); e != nil {
@@ -129,26 +133,8 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 			}
 		}
 	}
-	refillPending := func() bool {
-		if len(pending) >= 128 {
-			return true
-		}
-		paths, e := s.catalog.PendingPaths(ctx, source.ID, 128)
-		if e != nil {
-			s.fail(e)
-			return false
-		}
-		for _, path := range paths {
-			if len(pending) >= 128 {
-				break
-			}
-			if _, ok := pending[path]; !ok {
-				pending[path] = time.Now().Add(2 * time.Second)
-			}
-		}
-		return true
-	}
 	scan := func(targets []string, full bool, stage string) bool {
+		beforeGaps := gapCount
 		root, e := media.OpenRelative(source.Resolved, ".")
 		if e != nil {
 			recordGap("source_unavailable")
@@ -176,6 +162,7 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 				}
 			}
 		}
+		workStart := time.Now()
 		s.mu.Lock()
 		if initial {
 			s.state.Phase = "scanning"
@@ -211,7 +198,7 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 		if full && r.Complete {
 			known = map[string]bool{}
 			previous = map[string]media.Item{}
-			needsFull = false
+			needsFull = gapCount != beforeGaps || !w.Complete
 		}
 		for _, path := range r.RemovedPaths {
 			delete(known, path)
@@ -225,8 +212,17 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 			delete(created, item.RelativePath)
 			delete(pending, item.RelativePath)
 		}
-		if !refillPending() {
-			return false
+		// Only files discovered or explicitly touched in this run are eligible
+		// for bounded follow-up checks. Never refill from historical pending rows.
+		if !full {
+			for _, item := range r.Items {
+				if item.Method != "baseline" && item.Status == "recognized" && item.Bytes > 0 && item.Role != "temporary" && item.Stability == "pending" && len(pending) < 128 {
+					pending[item.RelativePath] = time.Now().Add(2 * time.Second)
+				}
+			}
+		}
+		if observationGap(workStart, time.Now(), false) {
+			recordGap("clock_change_during_update")
 		}
 		summary, e := s.catalog.Report(source.ID)
 		if e != nil {
@@ -254,7 +250,7 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 		}
 		s.state.Coverage = "原生变化按路径更新 · 每两分钟快速补新 · 不自动全盘更新"
 		if needsFull {
-			s.state.Coverage = "发现覆盖缺口；快速补新继续，建议手动全盘更新"
+			s.state.Coverage = "覆盖缺口：" + observationGapLabel(gapReason) + "；快速补新继续，建议手动全盘更新"
 		} else if !covered {
 			s.state.Coverage = "部分目录未完整监听；每两分钟快速补新，需要时手动全盘更新"
 		}
@@ -273,9 +269,10 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 			return
 		case e := <-w.Events:
 			consume(e)
-		case now := <-ticker.C:
-			if now.Sub(lastTick) > 5*time.Second || now.Before(lastTick) {
-				recordGap("sleep_or_clock_change")
+		case <-ticker.C:
+			now := time.Now()
+			if observationGap(lastTick, now, true) {
+				recordGap("observation_pause_or_clock_change")
 			}
 			lastTick = now
 			if w.Dropped() {

@@ -23,6 +23,8 @@ import (
 )
 
 type State struct {
+	CheckTotal       int                        `json:"check_total"`
+	CheckPass        int                        `json:"check_pass"`
 	UpdateRunning    bool                       `json:"update_running"`
 	BackgroundStage  string                     `json:"background_stage,omitempty"`
 	Stopping         bool                       `json:"stopping"`
@@ -116,7 +118,7 @@ func (s *Media) busy() bool {
 	if s.jobCancel != nil {
 		return true
 	}
-	return s.state.Phase == "backup" || s.state.Phase == "verifying" || s.state.Phase == "discovering" || s.state.Phase == "restoring" || s.state.Phase == "deleting" || s.state.Phase == "preparing_delete" || s.state.Phase == "recycling"
+	return s.state.Phase == "preparing_backup" || s.state.Phase == "backup" || s.state.Phase == "verifying" || s.state.Phase == "discovering" || s.state.Phase == "restoring" || s.state.Phase == "deleting" || s.state.Phase == "preparing_delete" || s.state.Phase == "recycling"
 }
 func (s *Media) stopLocked() {
 	if s.cancel != nil {
@@ -333,7 +335,7 @@ func (s *Media) BackupEstimate(f media.Filter) (mediabackup.Preview, error) {
 	}
 	s.mu.RLock()
 	if s.state.Mode == "backup" {
-		p := mediabackup.Estimate(s.items, f)
+		p := mediabackup.Plan(s.items, f)
 		s.mu.RUnlock()
 		return p, nil
 	}
@@ -342,16 +344,16 @@ func (s *Media) BackupEstimate(f media.Filter) (mediabackup.Preview, error) {
 	if source == nil {
 		return mediabackup.Preview{}, errors.New("请先选择媒体来源")
 	}
-	files, bytes, reasons, err := s.catalog.BackupStats(source.ID, f)
+	counts, err := s.catalog.BackupPlan(source.ID, f)
 	if err != nil {
 		return mediabackup.Preview{}, err
 	}
-	p := mediabackup.Preview{Files: files, Bytes: bytes, ExcludedReasons: reasons}
-	for _, count := range reasons {
+	p := mediabackup.Preview{Files: counts.Files, Bytes: counts.Bytes, Pending: counts.Pending, PendingBytes: counts.PendingBytes, ExcludedReasons: counts.ExcludedReasons}
+	for _, count := range counts.ExcludedReasons {
 		p.Excluded += count
 	}
-	if files > 0 {
-		p.EstimatedPeak = mediabackup.DirectoryBudget(bytes)
+	if p.Files+p.Pending > 0 {
+		p.EstimatedPeak = mediabackup.DirectoryBudgetFor(p.Files+p.Pending+p.Excluded, p.Bytes+p.PendingBytes)
 	}
 	return p, nil
 }
@@ -426,8 +428,8 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 	if err != nil {
 		return err
 	}
-	if estimate.Files == 0 {
-		return errors.New("当前条件没有可备份文件，请查看排除原因；待稳定文件需继续监控核对后刷新")
+	if estimate.Files+estimate.Pending == 0 {
+		return errors.New("当前条件没有可核对备份的文件，请查看排除原因或调整筛选")
 	}
 	protected, err := s.protected()
 	if err != nil {
@@ -451,28 +453,32 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 		return errors.New("备份创建与校验的临时空间不足，或无法查询目标空间")
 	}
 	s.stopLocked()
-	items, err := s.snapshot(source, f)
-	if err != nil {
-		return err
-	}
-	if mediabackup.Estimate(items, f).Files == 0 {
-		return errors.New("当前条件没有可备份的稳定文件，请重新盘点")
-	}
 	s.mu.Lock()
 	ctx, cancel := context.WithCancel(parent)
 	s.jobCancel = cancel
 	s.jobDone = make(chan struct{})
 	done := s.jobDone
-	s.state.Phase = "backup"
+	s.state.Phase = "preparing_backup"
+	s.state.Message = ""
 	s.state.Error = ""
 	s.state.Backup = nil
+	s.state.ExcludedItems = nil
+	s.state.CheckPass, s.state.CheckTotal = 0, 0
 	s.state.Scanned = 0
 	s.state.Bytes = 0
 	s.mu.Unlock()
 	go func() {
 		defer cancel()
 		defer close(done)
-		result, err := mediabackup.Build(ctx, source, items, f, target, protected, s.catalog.History, func(n int, b int64) { s.mu.Lock(); s.state.Scanned = n; s.state.Bytes = b; s.mu.Unlock() })
+		var result mediabackup.Result
+		items, options, err := s.prepareBackup(ctx, source, f)
+		if err == nil {
+			s.mu.Lock()
+			s.state.Phase = "backup"
+			s.state.Scanned, s.state.Bytes = 0, 0
+			s.mu.Unlock()
+			result, err = mediabackup.Build(ctx, source, items, f, target, protected, s.catalog.History, func(n int, b int64) { s.mu.Lock(); s.state.Scanned = n; s.state.Bytes = b; s.mu.Unlock() }, options)
+		}
 		if err == nil && format == "zip" {
 			zipPath, e := mediabackup.ZipDirectory(ctx, result.Path)
 			if e == nil {
@@ -499,15 +505,20 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 		if err == nil {
 			_ = s.catalog.SetPreference("backup_directory", target)
 		}
+		summary, summaryErr := s.catalog.Report(source.ID)
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.jobCancel = nil
 		s.state.Phase = "ready"
+		s.state.Revision++
+		if summaryErr == nil {
+			s.state.Report = summary
+		}
 		if err != nil {
 			s.state.Error = err.Error()
 		} else {
 			s.state.Backup = &result
-			s.state.Message = "备份已完成并通过独立 SHA-256 校验；监控已暂停，可点击继续监控"
+			s.state.Message = "备份已完成并通过独立 SHA-256 校验；监控已暂停，可点击快速更新"
 		}
 	}()
 	return nil

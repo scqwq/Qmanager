@@ -54,4 +54,12 @@ func TestEstimateExplainsAllExclusionsAndMatchesIndexedQuery(t *testing.T) {
 	if zero.Files != 0 || zero.EstimatedPeak != 0 || zero.ExcludedReasons["pending"] != 1 {
 		t.Fatal(zero)
 	}
+	plan := Plan(current, media.Filter{})
+	indexed, err := c.BackupPlan(source.ID, media.Filter{})
+	if err != nil || plan.Files != indexed.Files || plan.Pending != indexed.Pending || plan.PendingBytes != indexed.PendingBytes || !reflect.DeepEqual(plan.ExcludedReasons, indexed.ExcludedReasons) {
+		t.Fatal("SQL and memory plans differ", plan, indexed, err)
+	}
+	if plan.Pending == 0 || plan.EstimatedPeak <= p.EstimatedPeak {
+		t.Fatal("pending candidates omitted from budget", plan)
+	}
 }

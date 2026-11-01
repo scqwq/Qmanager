@@ -1,12 +1,12 @@
 # Qman / QQArchive — QQ 本地媒体管理
 
-当前版本 **0.2.2-preview**，Windows 桌面试用构建。使用 Go、Wails v2、Vue 3 / TypeScript 和 SQLite，在本机管理 QQ 已保存的图片、视频、收到的表情及语音原文件。
+当前版本 **0.3.0-preview**，Windows 桌面试用构建。使用 Go、Wails v2、Vue 3 / TypeScript 和 SQLite，在本机管理 QQ 已保存的图片、视频、收到的表情及语音原文件。
 
-QQ 源目录始终只读：不登录账号、不注入或修改 QQ、不解密消息、不上传媒体，不删除、移动或重命名源文件。创建索引和备份不会减少源占用。
+盘点、监控和备份保持源只读；“加载备份”是显式例外，可在确认的 Tencent Files 下新增媒体，已有文件不覆盖。不登录、注入或修改 QQ 程序，不解密消息、不上传媒体；不提供 QQ 源清理。创建备份和恢复副本都会增加空间占用。
 
 ## 直接运行
 
-关闭旧版窗口，双击 `build/bin/Qman.exe` 或 `build/bin/Qman-0.2.2.exe`。完整试用包在 `build/releases/Qman-0.2.2-preview-win-x64.zip`，含程序、使用说明及依赖许可证。构建产物不纳入 Git。
+关闭旧版窗口，双击 `build/bin/Qman.exe` 或 `build/bin/Qman-0.3.0.exe`。完整试用包在 `build/releases/Qman-0.3.0-preview-win-x64.zip`，含程序、使用说明及依赖许可证。构建产物不纳入 Git。
 
 运行需要 Microsoft Edge WebView2 Runtime；用户不需要安装 Go、Node.js 或数据库服务。完整操作见 [使用说明](docs/USER_GUIDE.md)。
 
@@ -34,6 +34,7 @@ QQ 源目录始终只读：不登录账号、不注入或修改 QQ、不解密�
 | --- | --- | --- |
 | 索引、查询缓存、观察历史 | `%LOCALAPPDATA%/Qman/catalog.sqlite` | 只保存元信息及历史，不保存原媒体；包含不能靠源文件准确重建的首次发现证据，不能当普通缓存随意删除 |
 | SQLite 临时事务文件 | 同目录的 `catalog.sqlite-journal` 等（存在时） | 属于数据库状态，不在应用运行时手动删除 |
+| 独立媒体副本 / ZIP 暂存 | `%LOCALAPPDATA%/Qman/library/`、`temporary/` | 写回失败或仅加载到 Qman 时保留独立副本；正常完成清理 ZIP 暂存，不随备份历史删除副本 |
 | WebView2 运行数据 | `%LOCALAPPDATA%/Qman/webview/` | 内嵌界面的独立用户数据目录；不是 QQ 媒体备份 |
 | 开发工具、编译缓存、合成样本 | 项目 `.local/` | 只供开发验证，不是普通用户运行所需的媒体索引 |
 | 前端依赖、打包资源 | `frontend/node_modules/`、`frontend/dist/` | 开发/构建产物，不纳入 Git |
@@ -44,7 +45,11 @@ QQ 源目录始终只读：不登录账号、不注入或修改 QQ、不解密�
 
 PNG/JPEG/GIF 支持受限缩略图，GIF 详情可尝试动图；视频通过本机受控接口分段读取，编码是否可播依赖 WebView2。WebP/HEIC/SILK 播放尚未支持，语音先盘点与原文件备份。原件、封面、缩略图、临时资源分开显示；只见封面不能认定视频完整。
 
-按当前条件备份稳定文件，采用自描述目录包并独立核对大小、引用及 SHA-256；未知、空、临时、不稳定项保留排除原因。复制会占用目标空间，不代表可删除源。备份可在原源断开、应用索引为空时独立打开，恢复包内已有时间证据；未保存的历史不会被补造。不自动上传云盘、不恢复进 QQ。格式见 [媒体目录包](docs/MEDIA_FORMAT.md)。
+点击“备份当前筛选”，可选择当前条件、来源月份范围或整年、媒体类型，导出文件夹或 ZIP，并记住上次位置；未知、空、临时和不稳定项保留排除原因。复制后独立核对对象、大小、引用及 SHA-256，目录包和 ZIP 均不加密。
+
+“加载备份”选择目录或 ZIP，核对账号路径并选择最外层 Tencent Files：同内容跳过，同路径不同内容加哈希后缀另存；旧备份缺少映射、QQ 仍运行或写回失败时尝试复制到 Qman 独立媒体库。保留已有时间证据，不判断 QQ 是否识别，不复制清单进 QQ 目录。
+
+侧边栏“备份历史”支持重新定位、查看已加载媒体，以及最多 100 份本地备份的批量永久删除；删除不经过回收站，不连带删除 QQ 源媒体、已补回文件或独立副本。没有媒体页源清理或自动云盘上传。ZIP 主要打包，创建约需三倍目标空间预算，加载也需解包暂存空间；完整说明和限制见 [媒体格式](docs/MEDIA_FORMAT.md)。
 
 ## 从源码构建与验证
 
@@ -53,7 +58,7 @@ PNG/JPEG/GIF 支持受限缩略图，GIF 详情可尝试动图；视频通过本
 ```powershell
 .\tools\Build-Qman.ps1
 # 另存一个版本，避免正在运行的文件被占用：
-.\tools\Build-Qman.ps1 -OutputName Qman-0.2.2.exe
+.\tools\Build-Qman.ps1 -OutputName Qman-0.3.0.exe
 ```
 
 脚本将 Wails 工具和依赖缓存放在 `.local/`，安装锁定前端依赖，完成类型检查、生产构建、exe 及许可证说明。首次运行 Go 检查前应先构建前端，因为桌面入口会嵌入 `frontend/dist`。
@@ -69,6 +74,6 @@ go vet ./...
 
 已通过合成回归、前端类型/构建及本机 WebView2/Vue/Go 启动与缓存查询检查。真实私有应用索引的只读诊断不等于真实媒体完整验收。完整窗口点击/视觉、视频编码矩阵、真实样本一致性、大文件、容量不足、断盘/休眠/崩溃、长期资源与干净环境仍待验收，不称正式发行。
 
-近期优先只读读取、索引缓存和日期体验；备份保留原型，不增加源删除。当前约定见 [AGENTS.md](AGENTS.md)，计划见 [PROJECT_PLAN](docs/PROJECT_PLAN.md)，实际进展见 [PROGRESS](docs/PROGRESS.md)。
+当前完善范围备份、历史管理和不覆盖加载，继续验证只读读取与索引体验；不增加 QQ 源删除。当前约定见 [AGENTS.md](AGENTS.md)，计划见 [PROJECT_PLAN](docs/PROJECT_PLAN.md)，实际进展见 [PROGRESS](docs/PROGRESS.md)。
 
 旧 `cmd/qqarchive-cli` 与 `.qqarc` 是合成文本归档开发子集，不是新媒体包；消息 Reader 和密钥兼容仍未解决，现已暂缓。历史格式说明见 [ARCHIVE_FORMAT](docs/ARCHIVE_FORMAT.md)，历史验证仍保留于 TESTING / PROGRESS，不把媒体进展算作旧聊天归档里程碑完成。

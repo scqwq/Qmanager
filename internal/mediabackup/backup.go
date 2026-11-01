@@ -31,14 +31,15 @@ type Entry struct {
 	Excluded string            `json:"excluded"`
 }
 type Manifest struct {
-	Format     string       `json:"format"`
-	Version    int          `json:"version"`
-	ID         string       `json:"id"`
-	CreatedAt  time.Time    `json:"created_at"`
-	SourceID   string       `json:"source_id"`
-	SourceName string       `json:"source_name"`
-	Selection  media.Filter `json:"selection"`
-	Entries    []Entry      `json:"entries"`
+	RestorePrefix string       `json:"restore_prefix,omitempty"`
+	Format        string       `json:"format"`
+	Version       int          `json:"version"`
+	ID            string       `json:"id"`
+	CreatedAt     time.Time    `json:"created_at"`
+	SourceID      string       `json:"source_id"`
+	SourceName    string       `json:"source_name"`
+	Selection     media.Filter `json:"selection"`
+	Entries       []Entry      `json:"entries"`
 }
 type Preview struct {
 	Files         int   `json:"files"`
@@ -85,6 +86,9 @@ func Estimate(items []media.Item, f media.Filter) Preview {
 }
 
 func Build(ctx context.Context, source media.Source, items []media.Item, f media.Filter, parent string, protected []string, history func(string) ([]catalog.History, error), progress func(int, int64)) (Result, error) {
+	if err := media.ValidateFilter(f); err != nil {
+		return Result{}, err
+	}
 	var result Result
 	target, err := media.Canonical(parent)
 	if err != nil {
@@ -130,6 +134,7 @@ func Build(ctx context.Context, source media.Source, items []media.Item, f media
 		return result, err
 	}
 	m := Manifest{Format: "qman-media-directory", Version: 1, ID: uuid.NewString(), CreatedAt: time.Now().UTC(), SourceID: source.ID, SourceName: source.Name, Selection: f, Entries: []Entry{}}
+	m.RestorePrefix = restorePrefix(source.Resolved)
 	unique := map[string]bool{}
 	buffer := make([]byte, 1024*1024)
 	metadataBytes := 0
@@ -287,6 +292,12 @@ func Open(ctx context.Context, path string, progress func(int, int64)) (Manifest
 	}
 	if m.Format != "qman-media-directory" || m.Version != 1 || !safeID.MatchString(m.ID) || len(m.Entries) > media.MaxFiles {
 		return m, nil, errors.New("不支持的备份格式、版本或对象数量")
+	}
+	if m.RestorePrefix != "" && !validPrefix(m.RestorePrefix) {
+		return m, nil, errors.New("备份恢复路径映射无效")
+	}
+	if err = media.ValidateFilter(m.Selection); err != nil {
+		return m, nil, err
 	}
 	expected := map[string]int64{}
 	instances := map[string]bool{}

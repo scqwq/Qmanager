@@ -89,12 +89,55 @@ func (a *App) GetFilterBuckets(f media.Filter) []media.Bucket {
 	return a.media.Buckets(f.View, f.IncludeBaseline)
 }
 func (a *App) CreateBackup(f media.Filter) error {
-	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择媒体备份存放位置（复制，不移动源文件）"})
+	return a.CreateBackupWithFormat(f, "directory")
+}
+func (a *App) CreateBackupWithFormat(f media.Filter, format string) error {
+	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择媒体备份存放位置（复制，不移动源文件）", DefaultDirectory: a.dialogDirectory("backup_directory")})
 	if err != nil || path == "" {
 		return err
 	}
-	return a.media.Backup(a.ctx, path, f)
+	return a.media.BackupFormat(a.ctx, path, f, format)
 }
+func (a *App) dialogDirectory(key string) string {
+	path := a.media.Preference(key)
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return path
+	}
+	return ""
+}
+func (a *App) GetBackupHistory() ([]catalog.BackupRecord, error) { return a.media.Backups() }
+func (a *App) ChooseBackup(expectedID string) (*appservice.BackupPreview, error) {
+	choice, err := runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{Type: runtime.QuestionDialog, Title: "加载备份", Message: "请选择备份保存形式", Buttons: []string{"备份文件夹", "ZIP 文件", "取消"}, DefaultButton: "备份文件夹", CancelButton: "取消"})
+	if err != nil || choice == "取消" || choice == "" {
+		return nil, err
+	}
+	var path string
+	if choice == "ZIP 文件" {
+		path, err = runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择 Qman ZIP 备份", Filters: []runtime.FileFilter{{DisplayName: "Qman ZIP 备份", Pattern: "*.zip"}}, DefaultDirectory: a.dialogDirectory("backup_directory")})
+	} else {
+		path, err = runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择含 manifest.json 的备份目录", DefaultDirectory: a.dialogDirectory("backup_directory")})
+	}
+	if err != nil || path == "" {
+		return nil, err
+	}
+	preview, err := a.media.PreviewBackup(a.ctx, path, expectedID)
+	if err != nil {
+		return nil, err
+	}
+	if expectedID != "" && preview.Record.ID != expectedID {
+		return nil, fmt.Errorf("所选备份编号与历史不符，未替换原记录")
+	}
+	return &preview, nil
+}
+func (a *App) PreviewHistoryBackup(id string) (appservice.BackupPreview, error) {
+	return a.media.PreviewHistoryBackup(a.ctx, id)
+}
+func (a *App) ChooseRestoreTarget() (string, error) {
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择最外层 Tencent Files（按备份内账号路径补回）", DefaultDirectory: a.dialogDirectory("restore_directory")})
+}
+func (a *App) LoadBackup(id, target string) error { return a.media.RestoreBackup(a.ctx, id, target) }
+func (a *App) ViewLoadedBackup(id string) error   { return a.media.ViewLoadedBackup(a.ctx, id) }
+func (a *App) DeleteBackups(ids []string) error   { return a.media.DeleteBackups(a.ctx, ids) }
 func (a *App) OpenBackup() error {
 	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择含 manifest.json 的 Qman 媒体备份目录"})
 	if err != nil || path == "" {

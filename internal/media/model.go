@@ -76,6 +76,8 @@ type Report struct {
 	Items          []Item    `json:"-"`
 }
 type Filter struct {
+	MonthFrom       string `json:"month_from,omitempty"`
+	MonthTo         string `json:"month_to,omitempty"`
 	IncludeBaseline bool   `json:"include_baseline"`
 	View            string `json:"view"`
 	From            string `json:"from"`
@@ -137,6 +139,9 @@ func Matches(item Item, f Filter) bool {
 			return false
 		}
 	} else if f.Month != "" && month != f.Month {
+		return false
+	}
+	if (f.MonthFrom != "" || f.MonthTo != "") && (month == "" || f.MonthFrom != "" && month < f.MonthFrom || f.MonthTo != "" && month > f.MonthTo) {
 		return false
 	}
 	if f.From != "" {

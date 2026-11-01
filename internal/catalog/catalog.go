@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS watch_events(id INTEGER PRIMARY KEY,source TEXT NOT N
 		db.Close()
 		return nil, err
 	}
+	if err = c.initBackups(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return c, nil
 }
 func (c *Catalog) Close() error { return c.db.Close() }
@@ -368,7 +372,15 @@ func (c *Catalog) RestoreEvidence(id string, payload []byte) error {
 	if len(payload) > 32*1024*1024 {
 		return errors.New("备份证据超过上限")
 	}
-	_, err := c.db.Exec("INSERT INTO restored_backups VALUES(?,?,?) ON CONFLICT(id) DO NOTHING", id, string(payload), time.Now().UTC().Format(time.RFC3339Nano))
+	var previous string
+	err := c.db.QueryRow("SELECT manifest FROM restored_backups WHERE id=?", id).Scan(&previous)
+	if err == nil && previous != string(payload) {
+		return errors.New("备份编号已存在但清单不同")
+	}
+	if err != nil && !isNoRows(err) {
+		return err
+	}
+	_, err = c.db.Exec("INSERT INTO restored_backups VALUES(?,?,?) ON CONFLICT(id) DO NOTHING", id, string(payload), time.Now().UTC().Format(time.RFC3339Nano))
 	return err
 }
 func (c *Catalog) Export(ctx context.Context, parent string) (string, error) {

@@ -93,10 +93,27 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 	scan := func(targets []string) bool {
 		// Capture hints before scanning; events arriving during this scan remain in
 		// dirty for another pass, including changes to an already-visited directory.
-		passForce := force
-		force = map[string]bool{}
-		dirty = map[string]bool{}
-		fullNeeded = false
+		passForce := map[string]bool{}
+		if len(targets) == 0 {
+			passForce = force
+			force = map[string]bool{}
+			dirty = map[string]bool{}
+			fullNeeded = false
+		} else {
+			// A stability probe must not consume a different file's notification
+			// while that file is still waiting for the debounce interval.
+			for path, value := range force {
+				if media.Covers(targets, path) {
+					passForce[path] = value
+					delete(force, path)
+				}
+			}
+			for path := range dirty {
+				if media.Covers(targets, path) {
+					delete(dirty, path)
+				}
+			}
+		}
 		s.mu.Lock()
 		s.state.Phase = "scanning"
 		s.mu.Unlock()

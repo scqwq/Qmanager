@@ -91,6 +91,9 @@ func (c *Catalog) ActiveItems(id string) (map[string]media.Item, error) {
 }
 
 func cacheWhere(source string, f media.Filter) (string, []interface{}, error) {
+	if err := media.ValidateFilter(f); err != nil {
+		return "", nil, err
+	}
 	clauses := []string{"c.source=?"}
 	args := []interface{}{source}
 	add := func(clause string, value interface{}) { clauses = append(clauses, clause); args = append(args, value) }
@@ -135,6 +138,26 @@ func cacheWhere(source string, f media.Filter) (string, []interface{}, error) {
 			month = ""
 		}
 		add("c.month=?", month)
+	}
+	if f.MonthFrom != "" || f.MonthTo != "" {
+		if f.View == "observed" {
+			if f.MonthFrom != "" {
+				start, _ := time.ParseInLocation("2006-01", f.MonthFrom, time.Local)
+				at(">=", start)
+			}
+			if f.MonthTo != "" {
+				end, _ := time.ParseInLocation("2006-01", f.MonthTo, time.Local)
+				at("<", end.AddDate(0, 1, 0))
+			}
+		} else {
+			clauses = append(clauses, "c.month<>''")
+			if f.MonthFrom != "" {
+				add("c.month>=?", f.MonthFrom)
+			}
+			if f.MonthTo != "" {
+				add("c.month<=?", f.MonthTo)
+			}
+		}
 	}
 	if f.From != "" {
 		start, e := time.ParseInLocation("2006-01-02", f.From, time.Local)

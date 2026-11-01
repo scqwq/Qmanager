@@ -13,6 +13,7 @@ import (
 	"qqarchive/internal/discovery"
 	"qqarchive/internal/media"
 	"qqarchive/internal/mediabackup"
+	"qqarchive/internal/storage"
 	"sort"
 	"strings"
 	"sync"
@@ -20,26 +21,27 @@ import (
 )
 
 type State struct {
-	IndexBytes       int64                 `json:"index_bytes"`
-	Phase            string                `json:"phase"`
-	Mode             string                `json:"mode"`
-	Source           *media.Source         `json:"source"`
-	Sources          []catalog.SavedSource `json:"sources"`
-	Scanned          int                   `json:"scanned"`
-	Bytes            int64                 `json:"bytes"`
-	Report           *media.Report         `json:"report"`
-	Watching         bool                  `json:"watching"`
-	Coverage         string                `json:"coverage"`
-	Revision         int                   `json:"revision"`
-	Error            string                `json:"error"`
-	Message          string                `json:"message"`
-	Backup           *mediabackup.Result   `json:"backup"`
-	Excluded         int                   `json:"excluded"`
-	ExcludedItems    []media.Issue         `json:"excluded_items"`
-	Cached           bool                  `json:"cached"`
-	LastFullScan     time.Time             `json:"last_full_scan"`
-	ReconcileSeconds int                   `json:"reconcile_seconds"`
-	Discovery        *discovery.Result     `json:"discovery"`
+	Restore          *mediabackup.RestoreResult `json:"restore,omitempty"`
+	IndexBytes       int64                      `json:"index_bytes"`
+	Phase            string                     `json:"phase"`
+	Mode             string                     `json:"mode"`
+	Source           *media.Source              `json:"source"`
+	Sources          []catalog.SavedSource      `json:"sources"`
+	Scanned          int                        `json:"scanned"`
+	Bytes            int64                      `json:"bytes"`
+	Report           *media.Report              `json:"report"`
+	Watching         bool                       `json:"watching"`
+	Coverage         string                     `json:"coverage"`
+	Revision         int                        `json:"revision"`
+	Error            string                     `json:"error"`
+	Message          string                     `json:"message"`
+	Backup           *mediabackup.Result        `json:"backup"`
+	Excluded         int                        `json:"excluded"`
+	ExcludedItems    []media.Issue              `json:"excluded_items"`
+	Cached           bool                       `json:"cached"`
+	LastFullScan     time.Time                  `json:"last_full_scan"`
+	ReconcileSeconds int                        `json:"reconcile_seconds"`
+	Discovery        *discovery.Result          `json:"discovery"`
 }
 type Media struct {
 	op             sync.Mutex
@@ -97,7 +99,7 @@ func NewMedia(c *catalog.Catalog, private string) (*Media, error) {
 func (s *Media) busy() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.state.Phase == "backup" || s.state.Phase == "verifying" || s.state.Phase == "discovering"
+	return s.state.Phase == "backup" || s.state.Phase == "verifying" || s.state.Phase == "discovering" || s.state.Phase == "restoring" || s.state.Phase == "deleting"
 }
 func (s *Media) stopLocked() {
 	if s.cancel != nil {
@@ -296,6 +298,12 @@ func (s *Media) protected() ([]string, error) {
 		return nil, err
 	}
 	roots := []string{s.private}
+	if restoreRoot := s.Preference("restore_directory"); restoreRoot != "" {
+		if _, e := media.Canonical(restoreRoot); e != nil {
+			return nil, errors.New("保存的恢复根发生变化，请重新选择核实")
+		}
+		roots = append(roots, restoreRoot)
+	}
 	for _, source := range sources {
 		if _, err := media.Canonical(source.Root); err != nil {
 			return nil, errors.New("已保存的来源路径发生变化，请重新选择并核实后再备份")
@@ -305,10 +313,19 @@ func (s *Media) protected() ([]string, error) {
 	return roots, nil
 }
 func (s *Media) Backup(parent context.Context, target string, f media.Filter) error {
+	return s.BackupFormat(parent, target, f, "directory")
+}
+func (s *Media) BackupFormat(parent context.Context, target string, f media.Filter, format string) error {
 	s.op.Lock()
 	defer s.op.Unlock()
 	if s.busy() {
 		return errors.New("当前任务尚未结束")
+	}
+	if format != "directory" && format != "zip" {
+		return errors.New("备份保存形式无效")
+	}
+	if err := media.ValidateFilter(f); err != nil {
+		return err
 	}
 	s.stopLocked()
 	protected, err := s.protected()
@@ -326,6 +343,13 @@ func (s *Media) Backup(parent context.Context, target string, f media.Filter) er
 	if err != nil {
 		return err
 	}
+	if format == "zip" {
+		estimate := mediabackup.Estimate(items, f)
+		free, e := storage.Free(target)
+		if e != nil || free < uint64(estimate.EstimatedPeak)*3 {
+			return errors.New("ZIP 创建与校验需要约三倍暂存预算，目标空间不足或不可查询")
+		}
+	}
 	s.mu.Lock()
 	ctx, cancel := context.WithCancel(parent)
 	s.jobCancel = cancel
@@ -341,6 +365,32 @@ func (s *Media) Backup(parent context.Context, target string, f media.Filter) er
 		defer cancel()
 		defer close(done)
 		result, err := mediabackup.Build(ctx, source, items, f, target, protected, s.catalog.History, func(n int, b int64) { s.mu.Lock(); s.state.Scanned = n; s.state.Bytes = b; s.mu.Unlock() })
+		if err == nil && format == "zip" {
+			zipPath, e := mediabackup.ZipDirectory(ctx, result.Path)
+			if e == nil {
+				// The directory was freshly created by this job. Only delete its
+				// validated object set after the independent ZIP is complete.
+				row, re := s.registerBackup(ctx, result.Path)
+				if re == nil {
+					row.DeletePath = row.Path
+					re = mediabackup.DeleteQuarantined(ctx, row)
+				}
+				if re != nil {
+					err = errors.New("ZIP 已创建并保留，目录副本有清理残留；不要将残留视作完整备份")
+				}
+				result.Path = zipPath
+			} else {
+				err = e
+			}
+		}
+		if result.Path != "" {
+			if _, e := s.registerBackup(context.WithoutCancel(ctx), result.Path); e != nil && err == nil {
+				err = errors.New("备份已保存，但登记失败；请保留产物并重新加载")
+			}
+		}
+		if err == nil {
+			_ = s.catalog.SetPreference("backup_directory", target)
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.jobCancel = nil

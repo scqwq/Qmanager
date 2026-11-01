@@ -13,6 +13,7 @@ import (
 	"qqarchive/internal/discovery"
 	"qqarchive/internal/media"
 	"qqarchive/internal/mediabackup"
+	"qqarchive/internal/mediacleanup"
 	"qqarchive/internal/storage"
 	"sort"
 	"strings"
@@ -21,6 +22,7 @@ import (
 )
 
 type State struct {
+	Cleanup          *catalog.CleanupJob        `json:"cleanup,omitempty"`
 	Restore          *mediabackup.RestoreResult `json:"restore,omitempty"`
 	IndexBytes       int64                      `json:"index_bytes"`
 	Phase            string                     `json:"phase"`
@@ -44,6 +46,8 @@ type State struct {
 	Discovery        *discovery.Result          `json:"discovery"`
 }
 type Media struct {
+	recycleMedia   func(context.Context, media.Item, string) error
+	cleanupQQ      func() (bool, error)
 	op             sync.Mutex
 	mu             sync.RWMutex
 	state          State
@@ -69,6 +73,8 @@ func NewMedia(c *catalog.Catalog, private string) (*Media, error) {
 		return nil, err
 	}
 	s := &Media{catalog: c, private: private, state: State{Phase: "idle", Mode: "source", Sources: sources}, byID: map[string]media.Item{}, previews: make(chan struct{}, 2), token: rand.Text()}
+	s.recycleMedia = mediacleanup.Recycle
+	s.cleanupQQ = storage.QQRunning
 	s.streamWorkers = make(chan struct{}, 4)
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -99,7 +105,10 @@ func NewMedia(c *catalog.Catalog, private string) (*Media, error) {
 func (s *Media) busy() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.state.Phase == "backup" || s.state.Phase == "verifying" || s.state.Phase == "discovering" || s.state.Phase == "restoring" || s.state.Phase == "deleting"
+	if s.jobCancel != nil {
+		return true
+	}
+	return s.state.Phase == "backup" || s.state.Phase == "verifying" || s.state.Phase == "discovering" || s.state.Phase == "restoring" || s.state.Phase == "deleting" || s.state.Phase == "preparing_delete" || s.state.Phase == "recycling"
 }
 func (s *Media) stopLocked() {
 	if s.cancel != nil {

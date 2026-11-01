@@ -11,19 +11,21 @@ import (
 )
 
 type BackupRecord struct {
-	ID         string          `json:"id"`
-	Name       string          `json:"name"`
-	Path       string          `json:"path"`
-	Format     string          `json:"format"`
-	CreatedAt  time.Time       `json:"created_at"`
-	Files      int             `json:"files"`
-	Bytes      int64           `json:"bytes"`
-	Selection  json.RawMessage `json:"selection"`
-	Manifest   string          `json:"-"`
-	Digest     string          `json:"digest"`
-	Status     string          `json:"status"`
-	Detail     string          `json:"detail"`
-	DeletePath string          `json:"-"`
+	SourceCleanupJob    string          `json:"source_cleanup_job,omitempty"`
+	SourceCleanupDetail string          `json:"source_cleanup_detail,omitempty"`
+	ID                  string          `json:"id"`
+	Name                string          `json:"name"`
+	Path                string          `json:"path"`
+	Format              string          `json:"format"`
+	CreatedAt           time.Time       `json:"created_at"`
+	Files               int             `json:"files"`
+	Bytes               int64           `json:"bytes"`
+	Selection           json.RawMessage `json:"selection"`
+	Manifest            string          `json:"-"`
+	Digest              string          `json:"digest"`
+	Status              string          `json:"status"`
+	Detail              string          `json:"detail"`
+	DeletePath          string          `json:"-"`
 }
 
 func isNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
@@ -76,6 +78,10 @@ func (c *Catalog) SaveBackup(row BackupRecord) error {
 	previous, err := c.Backup(row.ID)
 	if err == nil && previous.Digest != row.Digest {
 		return errors.New("同一备份编号对应不同清单，拒绝替换记录")
+	}
+	if err == nil && row.SourceCleanupJob == "" {
+		row.SourceCleanupJob = previous.SourceCleanupJob
+		row.SourceCleanupDetail = previous.SourceCleanupDetail
 	}
 	if err == nil && row.Manifest == "" {
 		row.Manifest = previous.Manifest

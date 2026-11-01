@@ -366,7 +366,7 @@ func (s *Media) DeleteBackups(parent context.Context, ids []string) error {
 				failures++
 			} else {
 				row.Status = "deleted"
-				row.Detail = "本地备份已删除；已恢复媒体与 QQ 源文件未删除"
+				row.Detail = "本地备份包已删除；本操作未连带清理源文件或已恢复副本"
 				row.DeletePath = ""
 			}
 			if err = s.catalog.SaveBackup(row); err != nil {

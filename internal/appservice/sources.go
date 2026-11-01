@@ -22,10 +22,15 @@ func (s *Media) activate(source media.Source, sources []catalog.SavedSource) err
 		return err
 	}
 	last := s.catalog.LastScan(source.ID)
+	cleanup, err := s.catalog.LatestCleanup(source.ID)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	revision := s.state.Revision + 1
 	s.state = State{Phase: "selected", Mode: "source", Source: &source, Sources: sources, Revision: revision, Report: cached, Cached: cached != nil, ReconcileSeconds: int(ReconcileInterval / time.Second), LastFullScan: last}
+	s.state.Cleanup = cleanup
 	if cached != nil {
 		s.state.Message = "已从本地索引加载，尚未核对当前源文件；可开始监控补充变化"
 	}

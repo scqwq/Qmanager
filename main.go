@@ -33,6 +33,9 @@ type App struct {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	if err := a.media.RecoverCleanup(); err != nil {
+		log.Print("未能核对上次媒体删除任务，请检查私有索引")
+	}
 	if os.Getenv("QMAN_SMOKE_CACHE_ONLY") == "1" {
 		return
 	}
@@ -138,6 +141,17 @@ func (a *App) ChooseRestoreTarget() (string, error) {
 func (a *App) LoadBackup(id, target string) error { return a.media.RestoreBackup(a.ctx, id, target) }
 func (a *App) ViewLoadedBackup(id string) error   { return a.media.ViewLoadedBackup(a.ctx, id) }
 func (a *App) DeleteBackups(ids []string) error   { return a.media.DeleteBackups(a.ctx, ids) }
+func (a *App) PrepareMediaDelete(request appservice.CleanupRequest) error {
+	return a.media.PrepareMediaDelete(a.ctx, request)
+}
+func (a *App) PrepareBackupSourceDelete(ids []string) error {
+	return a.media.PrepareBackupSourceDelete(a.ctx, ids)
+}
+func (a *App) ExecuteMediaDelete(id string) error                      { return a.media.ExecuteMediaDelete(a.ctx, id) }
+func (a *App) GetMediaDeleteJob(id string) (catalog.CleanupJob, error) { return a.media.CleanupJob(id) }
+func (a *App) GetMediaDeleteItems(id string, offset, limit int) ([]catalog.CleanupItem, error) {
+	return a.media.CleanupItems(id, offset, limit)
+}
 func (a *App) OpenBackup() error {
 	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择含 manifest.json 的 Qman 媒体备份目录"})
 	if err != nil || path == "" {

@@ -74,6 +74,10 @@ CREATE TABLE IF NOT EXISTS watch_events(id INTEGER PRIMARY KEY,source TEXT NOT N
 		db.Close()
 		return nil, err
 	}
+	if err = c.initCleanup(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return c, nil
 }
 func (c *Catalog) Close() error { return c.db.Close() }

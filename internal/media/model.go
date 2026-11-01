@@ -59,21 +59,28 @@ type Bucket struct {
 	Bytes int64  `json:"bytes"`
 }
 type Report struct {
-	Partial        bool      `json:"partial"`
-	Covered        []string  `json:"-"`
-	HeaderReads    int       `json:"header_reads"`
-	Reused         int       `json:"reused"`
-	IndexedUpdates int       `json:"indexed_updates"`
-	StartedAt      time.Time `json:"started_at"`
-	FinishedAt     time.Time `json:"finished_at"`
-	Complete       bool      `json:"complete"`
-	Cancelled      bool      `json:"cancelled"`
-	Files          int       `json:"files"`
-	Bytes          int64     `json:"bytes"`
-	Issues         []Issue   `json:"issues"`
-	IssueCount     int       `json:"issue_count"`
-	Buckets        []Bucket  `json:"buckets"`
-	Items          []Item    `json:"-"`
+	UpdateKind      string    `json:"update_kind,omitempty"`
+	Quick           bool      `json:"quick,omitempty"`
+	NamesEnumerated bool      `json:"-"`
+	EntriesChecked  int       `json:"entries_checked"`
+	KnownSkipped    int       `json:"known_skipped"`
+	Inspected       int       `json:"inspected"`
+	RemovedPaths    []string  `json:"-"`
+	Partial         bool      `json:"partial"`
+	Covered         []string  `json:"-"`
+	HeaderReads     int       `json:"header_reads"`
+	Reused          int       `json:"reused"`
+	IndexedUpdates  int       `json:"indexed_updates"`
+	StartedAt       time.Time `json:"started_at"`
+	FinishedAt      time.Time `json:"finished_at"`
+	Complete        bool      `json:"complete"`
+	Cancelled       bool      `json:"cancelled"`
+	Files           int       `json:"files"`
+	Bytes           int64     `json:"bytes"`
+	Issues          []Issue   `json:"issues"`
+	IssueCount      int       `json:"issue_count"`
+	Buckets         []Bucket  `json:"buckets"`
+	Items           []Item    `json:"-"`
 }
 type Filter struct {
 	MonthFrom       string `json:"month_from,omitempty"`

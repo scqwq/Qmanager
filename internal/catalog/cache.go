@@ -20,6 +20,8 @@ CREATE INDEX IF NOT EXISTS media_cache_type ON media_cache(source,kind,month DES
 CREATE TABLE IF NOT EXISTS cache_meta(version INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS source_reports(source TEXT PRIMARY KEY,payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS app_preferences(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS source_baseline(source TEXT PRIMARY KEY,established TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS media_cache_pending ON media_cache(source,json_extract(payload,'$.stability'));
 CREATE INDEX IF NOT EXISTS event_instance ON events(instance,id);`)
 	if err != nil {
 		return err
@@ -44,18 +46,24 @@ INSERT INTO cache_meta VALUES(1);`)
 	return tx.Commit()
 }
 func (c *Catalog) loadRecords(id string, activeOnly bool) ([]Record, error) {
+	return c.loadRecordsContext(context.Background(), id, activeOnly)
+}
+func (c *Catalog) loadRecordsContext(ctx context.Context, id string, activeOnly bool) ([]Record, error) {
 	query := "SELECT payload,present,samples,seen FROM instances WHERE source=?"
 	if activeOnly {
 		query += " AND present=1"
 	}
 	query += " ORDER BY rowid"
-	rows, err := c.db.Query(query, id)
+	rows, err := c.db.QueryContext(ctx, query, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []Record{}
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var payload, seen string
 		var present, samples int
 		if err := rows.Scan(&payload, &present, &samples, &seen); err != nil {
@@ -79,7 +87,13 @@ func (c *Catalog) loadRecords(id string, activeOnly bool) ([]Record, error) {
 }
 func (c *Catalog) Active(id string) ([]Record, error) { return c.loadRecords(id, true) }
 func (c *Catalog) ActiveItems(id string) (map[string]media.Item, error) {
-	records, err := c.Active(id)
+	return c.ActiveItemsContext(context.Background(), id)
+}
+func (c *Catalog) ActiveContext(ctx context.Context, id string) ([]Record, error) {
+	return c.loadRecordsContext(ctx, id, true)
+}
+func (c *Catalog) ActiveItemsContext(ctx context.Context, id string) (map[string]media.Item, error) {
+	records, err := c.ActiveContext(ctx, id)
 	if err != nil {
 		return nil, err
 	}

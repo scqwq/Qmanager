@@ -139,7 +139,7 @@ func (c *Catalog) Apply(ctx context.Context, id string, r *media.Report, initial
 	if info, err := os.Stat(c.path); err == nil && info.Size() > 512*1024*1024 {
 		return errors.New("索引达到 512 MiB 上限，请备份后维护索引")
 	}
-	previous, err := c.Active(id)
+	previous, err := c.activeForReport(ctx, id, r)
 	if err != nil {
 		return err
 	}
@@ -151,6 +151,13 @@ func (c *Catalog) Apply(ctx context.Context, id string, r *media.Report, initial
 		return err
 	}
 	known = known || baselineCount > 0
+	if !known {
+		var baseline int
+		if err = c.db.QueryRowContext(ctx, "SELECT count(*) FROM source_baseline WHERE source=?", id).Scan(&baseline); err != nil {
+			return err
+		}
+		known = baseline > 0
+	}
 	if !known {
 		var prior int
 		if err = c.db.QueryRow("SELECT count(*) FROM (SELECT 1 FROM instances WHERE source=? LIMIT 1)", id).Scan(&prior); err != nil {
@@ -234,6 +241,7 @@ func (c *Catalog) Apply(ctx context.Context, id string, r *media.Report, initial
 				item.StableObservedAt = nil
 			}
 			if renamed {
+				r.RemovedPaths = append(r.RemovedPaths, old.Item.RelativePath)
 				item.LastChangedAt = now.UTC()
 				if err = event(item.InstanceID, "rename", "volume_file_identity"); err != nil {
 					return err
@@ -325,6 +333,7 @@ func (c *Catalog) Apply(ctx context.Context, id string, r *media.Report, initial
 					return err
 				}
 				r.IndexedUpdates++
+				r.RemovedPaths = append(r.RemovedPaths, old.Item.RelativePath)
 				if err = event(old.Item.InstanceID, "missing", "complete_reconciliation"); err != nil {
 					return err
 				}
@@ -336,9 +345,15 @@ func (c *Catalog) Apply(ctx context.Context, id string, r *media.Report, initial
 			return err
 		}
 	}
+	if r.Complete && (!r.Partial || r.Quick && r.NamesEnumerated) {
+		if _, err = tx.ExecContext(ctx, "INSERT OR IGNORE INTO source_baseline VALUES(?,?)", id, now.UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
 	reportCopy := *r
 	reportCopy.Items = nil
 	reportCopy.Covered = nil
+	reportCopy.RemovedPaths = nil
 	reportPayload, e := json.Marshal(reportCopy)
 	if e != nil {
 		return e

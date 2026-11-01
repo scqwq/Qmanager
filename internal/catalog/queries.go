@@ -65,13 +65,41 @@ func (c *Catalog) Selected(ctx context.Context, source string, f media.Filter) (
 	return out, rows.Err()
 }
 func (c *Catalog) Eligible(source string, f media.Filter) (int, int64, int, error) {
+	files, bytes, reasons, err := c.BackupStats(source, f)
+	excluded := 0
+	for _, count := range reasons {
+		excluded += count
+	}
+	return files, bytes, excluded, err
+}
+
+// Group exclusions with the same precedence as mediabackup.reason, without
+// loading every media payload into the UI process.
+func (c *Catalog) BackupStats(source string, f media.Filter) (int, int64, map[string]int, error) {
 	where, args, err := cacheWhere(source, f)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, nil, err
 	}
-	condition := "c.status='recognized' AND c.bytes>0 AND c.role<>'temporary' AND json_extract(c.payload,'$.stability')='stable_heuristic'"
-	var files, total int
-	var bytes int64
-	err = c.db.QueryRow("SELECT coalesce(sum(CASE WHEN "+condition+" THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN "+condition+" THEN c.bytes ELSE 0 END),0),count(*) FROM media_cache c WHERE "+where, args...).Scan(&files, &bytes, &total)
-	return files, bytes, total - files, err
+	reason := "CASE WHEN c.status<>'recognized' THEN c.status WHEN c.bytes=0 THEN 'empty' WHEN c.role='temporary' THEN 'temporary' WHEN coalesce(json_extract(c.payload,'$.stability'),'')<>'stable_heuristic' THEN 'pending' ELSE '' END"
+	rows, err := c.db.Query("SELECT "+reason+" AS reason,count(*),coalesce(sum(c.bytes),0) FROM media_cache c WHERE "+where+" GROUP BY reason", args...)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	defer rows.Close()
+	files, bytes, reasons := 0, int64(0), map[string]int{}
+	for rows.Next() {
+		var why string
+		var count int
+		var size int64
+		if err = rows.Scan(&why, &count, &size); err != nil {
+			return 0, 0, nil, err
+		}
+		if why == "" {
+			files += count
+			bytes += size
+		} else {
+			reasons[why] = count
+		}
+	}
+	return files, bytes, reasons, rows.Err()
 }

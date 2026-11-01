@@ -13,6 +13,8 @@ import (
 
 const ReconcileInterval = 2 * time.Minute
 
+// The cadence now performs light name discovery, never automatic full audits.
+
 func (s *Media) activate(source media.Source, sources []catalog.SavedSource) error {
 	cached, err := s.catalog.Report(source.ID)
 	if err != nil {
@@ -31,6 +33,7 @@ func (s *Media) activate(source media.Source, sources []catalog.SavedSource) err
 	revision := s.state.Revision + 1
 	s.state = State{Phase: "selected", Mode: "source", Source: &source, Sources: sources, Revision: revision, Report: cached, Cached: cached != nil, ReconcileSeconds: int(ReconcileInterval / time.Second), LastFullScan: last}
 	s.state.Cleanup = cleanup
+	s.state.UpdateMode = "fast"
 	if cached != nil {
 		s.state.Message = "已从本地索引加载，尚未核对当前源文件；可开始监控补充变化"
 	}

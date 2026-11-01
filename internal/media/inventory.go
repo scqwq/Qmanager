@@ -13,6 +13,8 @@ import (
 )
 
 type ScanOptions struct {
+	NewOnly  bool
+	Known    map[string]bool
 	Previous map[string]Item
 	Force    map[string]bool
 	Targets  []string
@@ -58,7 +60,22 @@ func forced(paths map[string]bool, path string) bool {
 // ScanWith always checks current file identity/metadata. Format bytes are reused
 // only for unchanged instances; native modification hints force re-detection.
 func ScanWith(ctx context.Context, source Source, opts ScanOptions, progress func(int, int64)) Report {
-	r := Report{StartedAt: time.Now().UTC(), Complete: true, Partial: opts.Targets != nil, Items: []Item{}, Issues: []Issue{}, Buckets: []Bucket{}}
+	r := Report{StartedAt: time.Now().UTC(), Complete: true, Partial: opts.Targets != nil || opts.NewOnly, Quick: opts.NewOnly, NamesEnumerated: opts.Targets == nil, Items: []Item{}, Issues: []Issue{}, Buckets: []Bucket{}}
+	known := func(path string) bool {
+		if opts.Known[path] {
+			return true
+		}
+		_, ok := opts.Previous[path]
+		return ok
+	}
+	if opts.NewOnly {
+		r.UpdateKind = "fast"
+	} else {
+		r.UpdateKind = "full"
+	}
+	if opts.Targets != nil {
+		r.UpdateKind = "targeted"
+	}
 	issue := func(path, code string) {
 		r.Complete = false
 		r.IssueCount++
@@ -149,10 +166,23 @@ func ScanWith(ctx context.Context, source Source, opts ScanOptions, progress fun
 					return err
 				}
 				rel := filepath.Join(relative, entry.Name())
+				r.EntriesChecked++
+				if opts.NewOnly && progress != nil && r.EntriesChecked%500 == 0 {
+					progress(r.EntriesChecked, r.Bytes)
+				}
 				pathBytes += len(rel)
 				if pathBytes > 64*1024*1024 {
 					issue(rel, "metadata_limit")
 					return errors.New("达到路径元数据上限")
+				}
+				logical := filepath.ToSlash(filepath.Join(scope.Prefix, rel))
+				if opts.NewOnly && entry.Type().IsRegular() && known(logical) && !forced(opts.Force, logical) {
+					r.KnownSkipped++
+					if r.KnownSkipped+r.Files > MaxFiles {
+						issue(logical, "file_limit")
+						return errors.New("达到文件上限")
+					}
+					continue
 				}
 				path := filepath.Join(scope.Path, rel)
 				info, e := os.Lstat(path)
@@ -250,6 +280,7 @@ func ScanWith(ctx context.Context, source Source, opts ScanOptions, progress fun
 				if info.IsDir() {
 					e = walk(scope, filepath.FromSlash(rel), 0)
 				} else if info.Mode().IsRegular() {
+					r.EntriesChecked++
 					e = inspect(scope, filepath.FromSlash(rel), info)
 				} else {
 					issue(target, "non_regular_skipped")
@@ -258,7 +289,9 @@ func ScanWith(ctx context.Context, source Source, opts ScanOptions, progress fun
 					issue(target, "incomplete_target")
 				}
 				if r.IssueCount == before {
-					r.Covered = append(r.Covered, target)
+					if !opts.NewOnly || !info.IsDir() {
+						r.Covered = append(r.Covered, target)
+					}
 				}
 			}
 			if !matched {
@@ -290,8 +323,13 @@ func ScanWith(ctx context.Context, source Source, opts ScanOptions, progress fun
 		r.Buckets = append(r.Buckets, *buckets[key])
 	}
 	r.FinishedAt = time.Now().UTC()
+	r.Inspected = r.Files
 	if progress != nil {
-		progress(r.Files, r.Bytes)
+		if opts.NewOnly {
+			progress(r.EntriesChecked, r.Bytes)
+		} else {
+			progress(r.Files, r.Bytes)
+		}
 	}
 	return r
 }

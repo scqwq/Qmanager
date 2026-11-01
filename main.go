@@ -41,7 +41,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	if source := os.Getenv("QMAN_SMOKE_SOURCE"); source != "" {
 		if _, err := a.media.Select(source); err == nil {
-			a.media.Start(ctx)
+			a.media.StartUpdate(ctx, "fast")
 		}
 	}
 }
@@ -62,7 +62,7 @@ func (a *App) UIReady() {
 			day := withInitial.Items[0].FirstSeenAt.Local().Format("2006-01-02")
 			dateMatches = a.media.Page(media.Filter{View: "observed", IncludeBaseline: true, From: day, To: day}).Total
 		}
-		b, _ := json.Marshal(map[string]interface{}{"files": s.Report.Files, "complete": s.Report.Complete, "cached": s.Cached, "width": w, "height": h, "bridge": "vue-webview2-go", "observed_default": defaultDates.Total, "observed_with_initial": withInitial.Total, "initial_date_matches": dateMatches})
+		b, _ := json.Marshal(map[string]interface{}{"update_kind": s.Report.UpdateKind, "known_skipped": s.Report.KnownSkipped, "inspected": s.Report.Inspected, "files": s.Report.Files, "complete": s.Report.Complete, "cached": s.Cached, "width": w, "height": h, "bridge": "vue-webview2-go", "observed_default": defaultDates.Total, "observed_with_initial": withInitial.Total, "initial_date_matches": dateMatches})
 		if os.WriteFile(filepath.Join(a.private, "ui-smoke.json"), b, 0600) == nil {
 			runtime.Quit(a.ctx)
 		}
@@ -77,14 +77,18 @@ func (a *App) ChooseSource() (string, error) {
 	result, err := a.media.Discover(a.ctx, path)
 	return result.Root, err
 }
-func (a *App) StartScan() error                                { return a.media.Start(a.ctx) }
-func (a *App) CancelScan()                                     { a.media.Cancel() }
-func (a *App) GetState() appservice.State                      { return a.media.State() }
-func (a *App) GetPage(f media.Filter) media.Page               { return a.media.Page(f) }
-func (a *App) SwitchSource(id string) error                    { return a.media.Switch(id) }
-func (a *App) RenameSource(name string) error                  { return a.media.Rename(name) }
-func (a *App) StopWatch()                                      { a.media.Stop() }
-func (a *App) GetEstimate(f media.Filter) mediabackup.Preview  { return a.media.Estimate(f) }
+func (a *App) StartScan() error                  { return a.media.Start(a.ctx) }
+func (a *App) StartUpdate(mode string) error     { return a.media.StartUpdate(a.ctx, mode) }
+func (a *App) CancelScan()                       { a.media.Cancel() }
+func (a *App) GetState() appservice.State        { return a.media.State() }
+func (a *App) GetPage(f media.Filter) media.Page { return a.media.Page(f) }
+func (a *App) SwitchSource(id string) error      { return a.media.Switch(id) }
+func (a *App) RenameSource(name string) error    { return a.media.Rename(name) }
+func (a *App) StopWatch()                        { a.media.Stop() }
+func (a *App) StopUpdate() error                 { return a.media.StopUpdate() }
+func (a *App) GetEstimate(f media.Filter) (mediabackup.Preview, error) {
+	return a.media.BackupEstimate(f)
+}
 func (a *App) GetMediaURL(id string) (string, error)           { return a.media.MediaURL(id) }
 func (a *App) GetHistory(id string) ([]catalog.History, error) { return a.media.History(id) }
 func (a *App) GetBuckets(view string) []media.Bucket           { return a.media.Buckets(view) }
@@ -95,10 +99,21 @@ func (a *App) CreateBackup(f media.Filter) error {
 	return a.CreateBackupWithFormat(f, "directory")
 }
 func (a *App) CreateBackupWithFormat(f media.Filter, format string) error {
-	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择媒体备份存放位置（复制，不移动源文件）", DefaultDirectory: a.dialogDirectory("backup_directory")})
+	path, err := a.ChooseBackupDestination()
 	if err != nil || path == "" {
 		return err
 	}
+	return a.media.BackupFormat(a.ctx, path, f, format)
+}
+func (a *App) GetBackupDirectory() string { return a.dialogDirectory("backup_directory") }
+func (a *App) ChooseBackupDestination() (string, error) {
+	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择备份保存目录（可新建文件夹，复制并保留源文件）", DefaultDirectory: a.dialogDirectory("backup_directory"), CanCreateDirectories: true})
+	if err != nil || path == "" {
+		return "", err
+	}
+	return a.media.RememberBackupDirectory(path)
+}
+func (a *App) CreateBackupAt(f media.Filter, format, path string) error {
 	return a.media.BackupFormat(a.ctx, path, f, format)
 }
 func (a *App) dialogDirectory(key string) string {

@@ -12,6 +12,13 @@ var roots = []struct{ relative, kind string }{{"Pic", "image"}, {"Video", "video
 // Resolve only examines the four allowlisted roots, never the rest of nt_data.
 // A selected alias is resolved for display before the user starts a scan.
 func Resolve(selected string) (Source, error) {
+	return resolve(selected, false)
+}
+
+// ResolveForUpdate only accepts an already-saved root. Even if all four media
+// children were removed, an explicit full update can verify their absence.
+func ResolveForUpdate(selected string) (Source, error) { return resolve(selected, true) }
+func resolve(selected string, allowEmpty bool) (Source, error) {
 	a, err := filepath.Abs(selected)
 	if err != nil {
 		return Source{}, err
@@ -38,7 +45,7 @@ func Resolve(selected string) (Source, error) {
 			s.Scopes = append(s.Scopes, Scope{Path: p, Kind: allowed.kind, Prefix: allowed.relative})
 		}
 	}
-	if len(s.Scopes) == 0 {
+	if len(s.Scopes) == 0 && !allowEmpty {
 		return Source{}, errors.New("未找到支持的目录：请选择 nt_data、Pic、Video、emoji-recv 或 Ptt")
 	}
 	s.Scopes = nil

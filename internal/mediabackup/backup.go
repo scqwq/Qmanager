@@ -42,10 +42,11 @@ type Manifest struct {
 	Entries       []Entry      `json:"entries"`
 }
 type Preview struct {
-	Files         int   `json:"files"`
-	Bytes         int64 `json:"bytes"`
-	Excluded      int   `json:"excluded"`
-	EstimatedPeak int64 `json:"estimated_peak"`
+	ExcludedReasons map[string]int `json:"excluded_reasons"`
+	Files           int            `json:"files"`
+	Bytes           int64          `json:"bytes"`
+	Excluded        int            `json:"excluded"`
+	EstimatedPeak   int64          `json:"estimated_peak"`
 }
 type Result struct {
 	Path          string `json:"path"`
@@ -74,16 +75,25 @@ func Estimate(items []media.Item, f media.Filter) Preview {
 		if !media.Matches(item, f) {
 			continue
 		}
-		if reason(item) != "" {
+		if why := reason(item); why != "" {
 			p.Excluded++
+			if p.ExcludedReasons == nil {
+				p.ExcludedReasons = map[string]int{}
+			}
+			p.ExcludedReasons[why]++
 		} else {
 			p.Files++
 			p.Bytes += item.Bytes
 		}
 	}
-	p.EstimatedPeak = p.Bytes + maxManifest
+	if p.Files > 0 {
+		p.EstimatedPeak = DirectoryBudget(p.Bytes)
+	}
 	return p
 }
+
+// Includes a conservative manifest reserve, rather than claiming an exact size.
+func DirectoryBudget(bytes int64) int64 { return bytes + maxManifest }
 
 func Build(ctx context.Context, source media.Source, items []media.Item, f media.Filter, parent string, protected []string, history func(string) ([]catalog.History, error), progress func(int, int64)) (Result, error) {
 	if err := media.ValidateFilter(f); err != nil {

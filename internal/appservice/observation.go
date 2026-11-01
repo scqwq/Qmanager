@@ -2,19 +2,49 @@ package appservice
 
 import (
 	"context"
+	"errors"
 	"qqarchive/internal/media"
 	"qqarchive/internal/watch"
 	"time"
 )
 
-func (s *Media) observe(ctx context.Context, source media.Source, done chan struct{}) {
+func (s *Media) observe(ctx context.Context, source media.Source, done chan struct{}, firstMode string) {
 	defer close(done)
+	defer func() {
+		s.mu.Lock()
+		s.state.UpdateRunning = false
+		s.state.BackgroundStage = ""
+		if s.state.Phase == "scanning" {
+			s.state.Phase = "ready"
+		}
+		s.mu.Unlock()
+	}()
+	interval := s.discoveryInterval
+	if interval <= 0 {
+		interval = ReconcileInterval
+	}
 	started := time.Now().UTC()
-	if previous := s.catalog.LastScan(source.ID); !previous.IsZero() {
-		if err := s.catalog.Gap(source.ID, "resumed_after_gap", previous, started); err != nil {
+	previousEnd, _ := s.catalog.Preference("watch_end:" + source.ID)
+	previousStart, _ := s.catalog.Preference("watch_start:" + source.ID)
+	gapStart, _ := time.Parse(time.RFC3339Nano, previousEnd)
+	runStart, _ := time.Parse(time.RFC3339Nano, previousStart)
+	reason := "resumed_after_gap"
+	if runStart.After(gapStart) {
+		gapStart = runStart
+		reason = "previous_run_interrupted"
+	}
+	if gapStart.IsZero() {
+		gapStart = s.catalog.LastScan(source.ID)
+	}
+	if !gapStart.IsZero() {
+		if err := s.catalog.Gap(source.ID, reason, gapStart, started); err != nil {
 			s.fail(err)
 			return
 		}
+	}
+	if err := s.catalog.SetPreference("watch_start:"+source.ID, started.Format(time.RFC3339Nano)); err != nil {
+		s.fail(err)
+		return
 	}
 	w, err := watch.Start(ctx, source)
 	if err != nil {
@@ -22,22 +52,30 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 		return
 	}
 	defer w.Close()
-	covered := w.Complete
-	previous, err := s.catalog.ActiveItems(source.ID)
+	known, err := s.catalog.KnownPaths(ctx, source.ID)
 	if err != nil {
 		s.fail(err)
 		return
 	}
+	previous := map[string]media.Item{}
+	if firstMode == "full" {
+		previous, err = s.catalog.ActiveItemsContext(ctx, source.ID)
+		if err != nil {
+			s.fail(err)
+			return
+		}
+	}
+	covered := w.Complete
+	needsFull := false
 	created := map[string]time.Time{}
 	dirty := map[string]bool{}
 	force := map[string]bool{}
 	pending := map[string]time.Time{}
-	fullNeeded := false
 	initial := true
 	lastActivity := time.Now()
 	recordGap := func(reason string) {
 		covered = false
-		fullNeeded = true
+		needsFull = true
 		if e := s.catalog.Gap(source.ID, reason, lastActivity, time.Now().UTC()); e != nil {
 			s.fail(e)
 		}
@@ -48,9 +86,10 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 	defer func() {
 		now := time.Now().UTC()
 		_ = s.catalog.Gap(source.ID, "coverage_end", now, now)
+		_ = s.catalog.SetPreference("watch_end:"+source.ID, now.Format(time.RFC3339Nano))
 		s.mu.Lock()
 		s.state.Watching = false
-		s.state.Coverage = "监控已暂停；下次从已有索引继续核对"
+		s.state.Coverage = "监控已暂停；可快速补新或手动全盘核对"
 		if s.state.Phase == "scanning" {
 			s.state.Phase = "ready"
 		}
@@ -62,9 +101,9 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 			recordGap("native_error_or_overflow")
 			return
 		}
-		if err := s.catalog.RawEvent(source.ID, e.Path, e.Action, e.At); err != nil {
+		if e2 := s.catalog.RawEvent(source.ID, e.Path, e.Action, e.At); e2 != nil {
 			recordGap("raw_event_history_unavailable")
-			s.fail(err)
+			s.fail(e2)
 		}
 		if len(dirty) < 4096 {
 			dirty[e.Path] = true
@@ -90,18 +129,41 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 			}
 		}
 	}
-	scan := func(targets []string) bool {
-		// Capture hints before scanning; events arriving during this scan remain in
-		// dirty for another pass, including changes to an already-visited directory.
+	refillPending := func() bool {
+		if len(pending) >= 128 {
+			return true
+		}
+		paths, e := s.catalog.PendingPaths(ctx, source.ID, 128)
+		if e != nil {
+			s.fail(e)
+			return false
+		}
+		for _, path := range paths {
+			if len(pending) >= 128 {
+				break
+			}
+			if _, ok := pending[path]; !ok {
+				pending[path] = time.Now().Add(2 * time.Second)
+			}
+		}
+		return true
+	}
+	scan := func(targets []string, full bool, stage string) bool {
+		root, e := media.OpenRelative(source.Resolved, ".")
+		if e != nil {
+			recordGap("source_unavailable")
+			s.fail(errors.New("源目录暂不可访问，已保留原缓存；请恢复后再更新"))
+			return false
+		}
+		root.Close()
 		passForce := map[string]bool{}
-		if len(targets) == 0 {
+		if full {
 			passForce = force
 			force = map[string]bool{}
 			dirty = map[string]bool{}
-			fullNeeded = false
-		} else {
-			// A stability probe must not consume a different file's notification
-			// while that file is still waiting for the debounce interval.
+		} else if targets != nil {
+			// A stability check or targeted event consumes only covered hints, never
+			// unrelated paths still waiting for debounce. A name pass consumes none.
 			for path, value := range force {
 				if media.Covers(targets, path) {
 					passForce[path] = value
@@ -115,9 +177,22 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 			}
 		}
 		s.mu.Lock()
-		s.state.Phase = "scanning"
+		if initial {
+			s.state.Phase = "scanning"
+		} else {
+			s.state.Phase = "ready"
+		}
+		s.state.UpdateRunning = initial
+		s.state.BackgroundStage = stage
+		if full {
+			s.state.UpdateMode = "full"
+		} else {
+			s.state.UpdateMode = "fast"
+		}
+		s.state.Scanned = 0
+		s.state.Bytes = 0
 		s.mu.Unlock()
-		r := media.ScanWith(ctx, source, media.ScanOptions{Previous: previous, Force: passForce, Targets: targets}, func(n int, b int64) { s.mu.Lock(); s.state.Scanned = n; s.state.Bytes = b; s.mu.Unlock() })
+		r := media.ScanWith(ctx, source, media.ScanOptions{Previous: previous, Force: passForce, Targets: targets, NewOnly: !full, Known: known}, func(n int, b int64) { s.mu.Lock(); s.state.Scanned = n; s.state.Bytes = b; s.mu.Unlock() })
 		drain()
 		if w.Dropped() {
 			recordGap("event_queue_overflow")
@@ -128,56 +203,70 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 		if !r.Complete {
 			recordGap("incomplete_scan")
 		}
-		if err := s.catalog.Apply(ctx, source.ID, &r, initial, created, covered, time.Now().UTC()); err != nil {
-			s.fail(err)
+		if e = s.catalog.Apply(ctx, source.ID, &r, initial, created, covered, time.Now().UTC()); e != nil {
+			s.fail(e)
 			return false
 		}
 		initial = false
-		if !r.Partial && r.Complete {
+		if full && r.Complete {
+			known = map[string]bool{}
 			previous = map[string]media.Item{}
-		} else if r.Partial && r.Complete {
-			for path := range previous {
-				if media.Covers(r.Covered, path) {
-					delete(previous, path)
-				}
-			}
+			needsFull = false
+		}
+		for _, path := range r.RemovedPaths {
+			delete(known, path)
+			delete(previous, path)
+			delete(pending, path)
+			delete(created, path)
 		}
 		for _, item := range r.Items {
+			known[item.RelativePath] = true
 			previous[item.RelativePath] = item
 			delete(created, item.RelativePath)
 			delete(pending, item.RelativePath)
-			if item.Stability != "stable_heuristic" && item.Status == "recognized" && item.Bytes > 0 && item.Role != "temporary" && len(pending) < 128 {
-				pending[item.RelativePath] = time.Now().Add(2 * time.Second)
-			}
 		}
-		summary, err := s.catalog.Report(source.ID)
-		if err != nil {
-			s.fail(err)
+		if !refillPending() {
 			return false
 		}
-		lastFull := s.catalog.LastScan(source.ID)
+		summary, e := s.catalog.Report(source.ID)
+		if e != nil {
+			s.fail(e)
+			return false
+		}
 		s.mu.Lock()
 		s.state.Report = summary
 		s.state.Phase = "ready"
+		s.state.UpdateRunning = false
+		s.state.BackgroundStage = ""
 		s.state.Revision++
 		s.state.Cached = false
-		s.state.LastFullScan = lastFull
+		s.state.LastFullScan = s.catalog.LastScan(source.ID)
 		s.state.Watching = true
-		s.state.ReconcileSeconds = int(ReconcileInterval / time.Second)
-		s.state.Message = ""
-		s.state.Coverage = "原生变化增量更新 · 每 2 分钟完整核对"
-		if !covered {
-			s.state.Coverage = "部分监听或扫描存在缺口 · 每 2 分钟核对补漏"
+		s.state.UpdateMode = "fast"
+		s.state.NeedsFull = needsFull
+		s.state.ReconcileSeconds = int(interval / time.Second)
+		if r.UpdateKind == "full" {
+			s.state.Message = "全盘更新完成；随后仅监听变化并每两分钟轻量补新"
+		} else if r.UpdateKind == "fast" {
+			s.state.Message = "快速更新完成：旧文件沿用缓存，未全面核对变化和缺失"
+		} else {
+			s.state.Message = "变化路径已核对；其余旧文件继续沿用缓存"
+		}
+		s.state.Coverage = "原生变化按路径更新 · 每两分钟快速补新 · 不自动全盘更新"
+		if needsFull {
+			s.state.Coverage = "发现覆盖缺口；快速补新继续，建议手动全盘更新"
+		} else if !covered {
+			s.state.Coverage = "部分目录未完整监听；每两分钟快速补新，需要时手动全盘更新"
 		}
 		s.mu.Unlock()
 		return true
 	}
-	if !scan(nil) {
+	if !scan(nil, firstMode == "full", "") {
 		return
 	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	lastFull, lastTick := time.Now(), time.Now()
+	lastNames, lastTick := time.Now(), time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -192,34 +281,25 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 			if w.Dropped() {
 				recordGap("event_queue_overflow")
 			}
-			if now.Sub(lastFull) >= ReconcileInterval {
-				if !scan(nil) {
+			if now.Sub(lastNames) >= interval {
+				if !scan(nil, false, "discovery") {
 					return
 				}
-				lastFull = time.Now()
-				lastTick = lastFull
+				lastNames = time.Now()
+				lastTick = lastNames
 				continue
 			}
 			if len(dirty) > 0 && now.Sub(lastActivity) >= 2*time.Second {
-				if fullNeeded {
-					if !scan(nil) {
-						return
-					}
-					lastFull = time.Now()
-				} else {
-					targets := []string{}
-					for path := range dirty {
-						targets = append(targets, path)
-					}
-					if !scan(targets) {
-						return
-					}
+				targets := []string{}
+				for path := range dirty {
+					targets = append(targets, path)
+				}
+				if !scan(targets, false, "changes") {
+					return
 				}
 				lastTick = time.Now()
 				continue
 			}
-			// Small pending sets get stability probes; a large baseline uses the regular
-			// two-minute reconciliation rather than repeatedly walking the whole tree.
 			targets := []string{}
 			for path, at := range pending {
 				if !now.Before(at) {
@@ -228,11 +308,14 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 				}
 			}
 			if len(targets) > 0 {
-				if !scan(targets) {
+				if !scan(targets, false, "stability") {
 					return
 				}
 				lastTick = time.Now()
 			}
+			s.mu.Lock()
+			s.state.NeedsFull = needsFull
+			s.mu.Unlock()
 		}
 	}
 }

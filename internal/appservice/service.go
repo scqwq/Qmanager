@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"qqarchive/internal/catalog"
 	"qqarchive/internal/discovery"
@@ -22,6 +23,11 @@ import (
 )
 
 type State struct {
+	UpdateRunning    bool                       `json:"update_running"`
+	BackgroundStage  string                     `json:"background_stage,omitempty"`
+	Stopping         bool                       `json:"stopping"`
+	UpdateMode       string                     `json:"update_mode"`
+	NeedsFull        bool                       `json:"needs_full"`
 	Cleanup          *catalog.CleanupJob        `json:"cleanup,omitempty"`
 	Restore          *mediabackup.RestoreResult `json:"restore,omitempty"`
 	IndexBytes       int64                      `json:"index_bytes"`
@@ -46,25 +52,26 @@ type State struct {
 	Discovery        *discovery.Result          `json:"discovery"`
 }
 type Media struct {
-	recycleMedia   func(context.Context, media.Item, string) error
-	cleanupQQ      func() (bool, error)
-	op             sync.Mutex
-	mu             sync.RWMutex
-	state          State
-	items          []media.Item
-	byID           map[string]media.Item
-	catalog        *catalog.Catalog
-	private        string
-	cancel         context.CancelFunc
-	done           chan struct{}
-	jobCancel      context.CancelFunc
-	jobDone        chan struct{}
-	previews       chan struct{}
-	streamWorkers  chan struct{}
-	archiveHistory map[string][]catalog.History
-	server         *http.Server
-	url            string
-	token          string
+	discoveryInterval time.Duration
+	recycleMedia      func(context.Context, media.Item, string) error
+	cleanupQQ         func() (bool, error)
+	op                sync.Mutex
+	mu                sync.RWMutex
+	state             State
+	items             []media.Item
+	byID              map[string]media.Item
+	catalog           *catalog.Catalog
+	private           string
+	cancel            context.CancelFunc
+	done              chan struct{}
+	jobCancel         context.CancelFunc
+	jobDone           chan struct{}
+	previews          chan struct{}
+	streamWorkers     chan struct{}
+	archiveHistory    map[string][]catalog.History
+	server            *http.Server
+	url               string
+	token             string
 }
 
 func NewMedia(c *catalog.Catalog, private string) (*Media, error) {
@@ -73,6 +80,7 @@ func NewMedia(c *catalog.Catalog, private string) (*Media, error) {
 		return nil, err
 	}
 	s := &Media{catalog: c, private: private, state: State{Phase: "idle", Mode: "source", Sources: sources}, byID: map[string]media.Item{}, previews: make(chan struct{}, 2), token: rand.Text()}
+	s.discoveryInterval = ReconcileInterval
 	s.recycleMedia = mediacleanup.Recycle
 	s.cleanupQQ = storage.QQRunning
 	s.streamWorkers = make(chan struct{}, 4)
@@ -187,10 +195,16 @@ func (s *Media) Rename(name string) error {
 	return nil
 }
 func (s *Media) Start(parent context.Context) error {
+	return s.StartUpdate(parent, "full")
+}
+func (s *Media) StartUpdate(parent context.Context, mode string) error {
 	s.op.Lock()
 	defer s.op.Unlock()
 	if s.busy() {
 		return errors.New("当前任务尚未结束")
+	}
+	if mode != "fast" && mode != "full" {
+		return errors.New("请选择快速更新或全盘更新")
 	}
 	s.stopLocked()
 	s.mu.Lock()
@@ -199,7 +213,7 @@ func (s *Media) Start(parent context.Context) error {
 		return errors.New("请先选择媒体目录")
 	}
 	source := *s.state.Source
-	fresh, err := media.Resolve(source.Resolved)
+	fresh, err := media.ResolveForUpdate(source.Resolved)
 	if err != nil {
 		s.mu.Unlock()
 		return errors.New("源目录暂不可访问，仍可浏览缓存记录")
@@ -215,14 +229,41 @@ func (s *Media) Start(parent context.Context) error {
 	s.state.Phase = "scanning"
 	s.state.Error = ""
 	s.state.Message = ""
+	s.state.UpdateMode = mode
+	s.state.UpdateRunning = true
+	s.state.BackgroundStage = ""
+	s.state.Stopping = false
 	s.mu.Unlock()
 	ctx, cancel := context.WithCancel(parent)
 	s.cancel = cancel
 	s.done = make(chan struct{})
-	go s.observe(ctx, source, s.done)
+	go s.observe(ctx, source, s.done, mode)
 	return nil
 }
 func (s *Media) Stop() { s.op.Lock(); defer s.op.Unlock(); s.stopLocked() }
+
+// StopUpdate cancels observation only; it never cancels a backup or cleanup job.
+func (s *Media) StopUpdate() error {
+	s.op.Lock()
+	defer s.op.Unlock()
+	if s.busy() {
+		return errors.New("当前正在执行其他任务，请使用该任务的取消按钮")
+	}
+	s.mu.Lock()
+	s.state.Stopping = true
+	s.mu.Unlock()
+	s.stopLocked()
+	s.mu.Lock()
+	s.state.Stopping = false
+	s.state.UpdateRunning = false
+	s.state.BackgroundStage = ""
+	s.state.Watching = false
+	s.state.Phase = "ready"
+	s.state.Error = ""
+	s.state.Message = "更新已终止，已有索引和观察历史已保留；后台监控已暂停"
+	s.mu.Unlock()
+	return nil
+}
 func (s *Media) Cancel() {
 	s.mu.RLock()
 	cancel := s.jobCancel
@@ -283,23 +324,64 @@ func (s *Media) History(id string) ([]catalog.History, error) {
 	return s.catalog.History(item.InstanceID)
 }
 func (s *Media) Estimate(f media.Filter) mediabackup.Preview {
+	p, _ := s.BackupEstimate(f)
+	return p
+}
+func (s *Media) BackupEstimate(f media.Filter) (mediabackup.Preview, error) {
+	if err := media.ValidateFilter(f); err != nil {
+		return mediabackup.Preview{}, err
+	}
 	s.mu.RLock()
 	if s.state.Mode == "backup" {
 		p := mediabackup.Estimate(s.items, f)
 		s.mu.RUnlock()
-		return p
+		return p, nil
 	}
 	source := s.state.Source
 	s.mu.RUnlock()
 	if source == nil {
-		return mediabackup.Preview{}
+		return mediabackup.Preview{}, errors.New("请先选择媒体来源")
 	}
-	files, bytes, excluded, err := s.catalog.Eligible(source.ID, f)
+	files, bytes, reasons, err := s.catalog.BackupStats(source.ID, f)
 	if err != nil {
-		s.fail(err)
-		return mediabackup.Preview{}
+		return mediabackup.Preview{}, err
 	}
-	return mediabackup.Preview{Files: files, Bytes: bytes, Excluded: excluded, EstimatedPeak: bytes + 32*1024*1024}
+	p := mediabackup.Preview{Files: files, Bytes: bytes, ExcludedReasons: reasons}
+	for _, count := range reasons {
+		p.Excluded += count
+	}
+	if files > 0 {
+		p.EstimatedPeak = mediabackup.DirectoryBudget(bytes)
+	}
+	return p, nil
+}
+
+func (s *Media) backupDirectory(target string) (string, error) {
+	path, err := media.Canonical(target)
+	if err != nil {
+		return "", errors.New("备份保存目录不可用，请重新选择")
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("请选择有效的备份保存目录")
+	}
+	roots, err := s.protected()
+	if err != nil {
+		return "", err
+	}
+	for _, root := range roots {
+		if media.Overlap(root, path) {
+			return "", errors.New("备份保存目录必须与 QQ 数据目录和 Qman 应用数据分开")
+		}
+	}
+	return path, nil
+}
+func (s *Media) RememberBackupDirectory(target string) (string, error) {
+	path, err := s.backupDirectory(target)
+	if err != nil {
+		return "", err
+	}
+	return path, s.catalog.SetPreference("backup_directory", path)
 }
 func (s *Media) protected() ([]string, error) {
 	sources, err := s.catalog.Sources()
@@ -336,7 +418,17 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 	if err := media.ValidateFilter(f); err != nil {
 		return err
 	}
-	s.stopLocked()
+	target, err := s.backupDirectory(target)
+	if err != nil {
+		return err
+	}
+	estimate, err := s.BackupEstimate(f)
+	if err != nil {
+		return err
+	}
+	if estimate.Files == 0 {
+		return errors.New("当前条件没有可备份文件，请查看排除原因；待稳定文件需继续监控核对后刷新")
+	}
 	protected, err := s.protected()
 	if err != nil {
 		return err
@@ -348,16 +440,23 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 	}
 	source := *s.state.Source
 	s.mu.Unlock()
+	// Invalid output, empty selections and insufficient space must not stop
+	// observation: pending files still need their later stability checks.
+	budget := estimate.EstimatedPeak
+	if format == "zip" {
+		budget *= 3
+	}
+	free, err := storage.Free(target)
+	if err != nil || free < uint64(budget) {
+		return errors.New("备份创建与校验的临时空间不足，或无法查询目标空间")
+	}
+	s.stopLocked()
 	items, err := s.snapshot(source, f)
 	if err != nil {
 		return err
 	}
-	if format == "zip" {
-		estimate := mediabackup.Estimate(items, f)
-		free, e := storage.Free(target)
-		if e != nil || free < uint64(estimate.EstimatedPeak)*3 {
-			return errors.New("ZIP 创建与校验需要约三倍暂存预算，目标空间不足或不可查询")
-		}
+	if mediabackup.Estimate(items, f).Files == 0 {
+		return errors.New("当前条件没有可备份的稳定文件，请重新盘点")
 	}
 	s.mu.Lock()
 	ctx, cancel := context.WithCancel(parent)

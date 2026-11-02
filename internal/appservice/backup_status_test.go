@@ -113,7 +113,7 @@ func TestRestoreStatusPersistsIndependentOfPackageOperationsAndRecordsFailure(t 
 		t.Fatal(s.State().Error)
 	}
 	saved, _ := c.Backup(row.ID)
-	if saved.RestoreResult == nil || saved.RestoreResult.State != "qman_only" || saved.RestoreResult.Fallback != 3 || saved.RestoreResult.FinishedAt == nil || !saved.OriginalFiles.Stale {
+	if saved.RestoreResult == nil || saved.RestoreResult.State != "qman_only" || saved.RestoreResult.Fallback != 3 || saved.RestoreResult.FinishedAt == nil || saved.RestoreResult.StartedAt.IsZero() || saved.RestoreResult.FinishedAt.Before(saved.RestoreResult.StartedAt) || !saved.OriginalFiles.Stale {
 		t.Fatal(saved.RestoreResult, saved.OriginalFiles)
 	}
 	if _, err := s.PreviewBackup(ctx, row.Path); err != nil {
@@ -129,7 +129,7 @@ func TestRestoreStatusPersistsIndependentOfPackageOperationsAndRecordsFailure(t 
 	}
 	waitBackupJob(t, s)
 	failed, _ := c.Backup(row.ID)
-	if s.State().Error == "" || failed.RestoreResult.State != "failed" || failed.RestoreResult.FinishedAt == nil || failed.RestoreResult.Fallback != 0 {
+	if s.State().Error == "" || failed.RestoreResult.State != "failed" || failed.RestoreResult.FinishedAt == nil || failed.RestoreResult.StartedAt.IsZero() || failed.RestoreResult.FinishedAt.Before(failed.RestoreResult.StartedAt) || failed.RestoreResult.Fallback != 0 {
 		t.Fatal("old success survived failed restore", failed.RestoreResult)
 	}
 	if _, err := c.Import(row.ID); err != nil {

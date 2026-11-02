@@ -228,7 +228,7 @@ func (a *App) OpenBackup() error {
 	return a.media.OpenBackup(a.ctx, path)
 }
 func (a *App) ExportIndex() (string, error) {
-	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择索引备份位置（含观察历史，不含媒体）"})
+	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择应用记录备份位置（不含媒体文件）"})
 	if err != nil || path == "" {
 		return "", err
 	}

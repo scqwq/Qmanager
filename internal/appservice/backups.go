@@ -13,6 +13,7 @@ import (
 	"qqarchive/internal/mediabackup"
 	"qqarchive/internal/storage"
 	"strings"
+	"time"
 )
 
 type BackupPreview struct {
@@ -145,13 +146,61 @@ func (s *Media) PreviewBackup(parent context.Context, path string, expectedID ..
 	return preview, nil
 }
 func (s *Media) RestoreBackup(parent context.Context, id, target string) error {
-	return s.backupJob(parent, "restoring", func(ctx context.Context) error {
+	return s.backupJob(parent, "restoring", func(ctx context.Context) (returnErr error) {
 		row, err := s.catalog.Backup(id)
 		if err != nil {
 			return err
 		}
 		if row.Status == "deleted" || row.DeletePath != "" {
 			return errors.New("此备份已删除或正在删除，请重新定位完整副本")
+		}
+		attempt := &catalog.BackupRestoreStatus{State: "running", StartedAt: time.Now().UTC(), Target: target, Failed: row.Files}
+		row.RestoreResult = attempt
+		if row.OriginalFiles != nil {
+			row.OriginalFiles.Stale = true
+		}
+		// Record a single active ID before publishing running state. Startup can
+		// recover that one row without parsing every historical manifest.
+		if err = s.catalog.SetPreference("active_backup_restore", id); err != nil {
+			return err
+		}
+		if err = s.catalog.SaveBackup(row); err != nil {
+			return err
+		}
+		defer func() {
+			finished := time.Now().UTC()
+			attempt.FinishedAt = &finished
+			switch {
+			case returnErr != nil:
+				attempt.State = "failed"
+				if errors.Is(returnErr, context.Canceled) {
+					attempt.State = "cancelled"
+				} else if attempt.Written+attempt.Skipped+attempt.Fallback > 0 {
+					attempt.State = "partial"
+				}
+				attempt.Detail = returnErr.Error()
+			case attempt.Failed > 0:
+				attempt.State = "partial"
+			case attempt.Fallback > 0 && attempt.Target != "":
+				attempt.State = "fallback"
+			case attempt.Target == "":
+				attempt.State = "qman_only"
+			default:
+				attempt.State = "completed"
+			}
+			latest, e := s.catalog.Backup(id)
+			if e == nil {
+				latest.RestoreResult = attempt
+				e = s.catalog.SaveBackup(latest)
+			}
+			if e != nil {
+				returnErr = errors.Join(returnErr, errors.New("未能保存本次恢复状态，请保留已加载文件并核对应用索引"))
+			} else {
+				_ = s.catalog.SetPreference("active_backup_restore", "")
+			}
+		}()
+		if err = ctx.Err(); err != nil {
+			return err
 		}
 		pack, err := mediabackup.OpenPackage(ctx, row.Path, filepath.Join(s.private, "temporary"), s.backupProgress)
 		if err != nil {
@@ -172,12 +221,13 @@ func (s *Media) RestoreBackup(parent context.Context, id, target string) error {
 		}
 		fallbackReason := ""
 		if target != "" {
-			running, e := storage.QQRunning()
+			running, e := s.cleanupQQ()
 			if e != nil || running {
 				target = ""
 				fallbackReason = "QQ 尚在运行或无法核实进程状态，本次仅保存到 Qman。"
 			}
 		}
+		attempt.Detail = fallbackReason
 		fallback := filepath.Join(s.private, "library", row.ID)
 		if _, err = media.Canonical(fallback); err != nil {
 			return err
@@ -198,6 +248,7 @@ func (s *Media) RestoreBackup(parent context.Context, id, target string) error {
 				}
 			}
 		}
+		attempt.Written, attempt.Skipped, attempt.Conflicts, attempt.Fallback, attempt.Failed = result.Written, result.Skipped, result.Conflicts, result.Fallback, result.Failed
 		saved := importState{Manifest: pack.Manifest, Result: result}
 		payload, err := json.Marshal(saved)
 		if err != nil {

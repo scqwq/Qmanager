@@ -12,24 +12,60 @@ import (
 )
 
 type BackupRecord struct {
-	LocalState          string          `json:"local_state,omitempty"`
-	LocalDetail         string          `json:"local_detail,omitempty"`
-	LocationCheckedAt   *time.Time      `json:"location_checked_at,omitempty"`
-	SourceCleanupJob    string          `json:"source_cleanup_job,omitempty"`
-	SourceCleanupDetail string          `json:"source_cleanup_detail,omitempty"`
-	ID                  string          `json:"id"`
-	Name                string          `json:"name"`
-	Path                string          `json:"path"`
-	Format              string          `json:"format"`
-	CreatedAt           time.Time       `json:"created_at"`
-	Files               int             `json:"files"`
-	Bytes               int64           `json:"bytes"`
-	Selection           json.RawMessage `json:"selection"`
-	Manifest            string          `json:"-"`
-	Digest              string          `json:"digest"`
-	Status              string          `json:"status"`
-	Detail              string          `json:"detail"`
-	DeletePath          string          `json:"-"`
+	OriginalFiles       *BackupFileStatus    `json:"original_files,omitempty"`
+	CleanupResult       *BackupCleanupStatus `json:"cleanup_result,omitempty"`
+	RestoreResult       *BackupRestoreStatus `json:"restore_result,omitempty"`
+	LocalState          string               `json:"local_state,omitempty"`
+	LocalDetail         string               `json:"local_detail,omitempty"`
+	LocationCheckedAt   *time.Time           `json:"location_checked_at,omitempty"`
+	SourceCleanupJob    string               `json:"source_cleanup_job,omitempty"`
+	SourceCleanupDetail string               `json:"source_cleanup_detail,omitempty"`
+	ID                  string               `json:"id"`
+	Name                string               `json:"name"`
+	Path                string               `json:"path"`
+	Format              string               `json:"format"`
+	CreatedAt           time.Time            `json:"created_at"`
+	Files               int                  `json:"files"`
+	Bytes               int64                `json:"bytes"`
+	Selection           json.RawMessage      `json:"selection"`
+	Manifest            string               `json:"-"`
+	Digest              string               `json:"digest"`
+	Status              string               `json:"status"`
+	Detail              string               `json:"detail"`
+	DeletePath          string               `json:"-"`
+}
+
+type BackupFileStatus struct {
+	State     string    `json:"state"`
+	CheckedAt time.Time `json:"checked_at"`
+	Stale     bool      `json:"stale"`
+	Total     int       `json:"total"`
+	Present   int       `json:"present"`
+	Missing   int       `json:"missing"`
+	Changed   int       `json:"changed"`
+	Unknown   int       `json:"unknown"`
+}
+type BackupCleanupStatus struct {
+	State     string    `json:"state"`
+	At        time.Time `json:"at"`
+	Joint     bool      `json:"joint"`
+	Recycled  int       `json:"recycled"`
+	Skipped   int       `json:"skipped"`
+	Failed    int       `json:"failed"`
+	Uncertain int       `json:"uncertain"`
+	Remaining int       `json:"remaining"`
+}
+type BackupRestoreStatus struct {
+	State      string     `json:"state"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	Target     string     `json:"target,omitempty"`
+	Written    int        `json:"written"`
+	Skipped    int        `json:"skipped"`
+	Conflicts  int        `json:"conflicts"`
+	Fallback   int        `json:"fallback"`
+	Failed     int        `json:"failed"`
+	Detail     string     `json:"detail,omitempty"`
 }
 
 func isNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
@@ -56,7 +92,7 @@ func (c *Catalog) Backup(id string) (BackupRecord, error) {
 	return row.Record, err
 }
 func (c *Catalog) Backups() ([]BackupRecord, error) {
-	rows, err := c.db.Query("SELECT json_extract(payload,'$.record') FROM backup_records ORDER BY rowid DESC LIMIT 10001")
+	rows, err := c.db.Query("SELECT json_extract(payload,'$.record'),EXISTS(SELECT 1 FROM backup_imports WHERE backup_imports.id=backup_records.id) FROM backup_records ORDER BY rowid DESC LIMIT 10001")
 	if err != nil {
 		return nil, err
 	}
@@ -65,11 +101,15 @@ func (c *Catalog) Backups() ([]BackupRecord, error) {
 	for rows.Next() {
 		var payload string
 		var row BackupRecord
-		if err = rows.Scan(&payload); err != nil {
+		var imported bool
+		if err = rows.Scan(&payload, &imported); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal([]byte(payload), &row); err != nil {
 			return nil, err
+		}
+		if imported && row.RestoreResult == nil {
+			row.RestoreResult = &BackupRestoreStatus{State: "legacy", Detail: "已有加载记录；可核对原文件读取旧结果，未重新验证落盘副本"}
 		}
 		out = append(out, row)
 	}
@@ -89,6 +129,17 @@ func (c *Catalog) SaveBackup(row BackupRecord) error {
 	if err == nil && row.SourceCleanupJob == "" {
 		row.SourceCleanupJob = previous.SourceCleanupJob
 		row.SourceCleanupDetail = previous.SourceCleanupDetail
+	}
+	if err == nil {
+		if row.OriginalFiles == nil {
+			row.OriginalFiles = previous.OriginalFiles
+		}
+		if row.CleanupResult == nil {
+			row.CleanupResult = previous.CleanupResult
+		}
+		if row.RestoreResult == nil || row.RestoreResult.State == "legacy" {
+			row.RestoreResult = previous.RestoreResult
+		}
 	}
 	if err == nil && row.Manifest == "" {
 		row.Manifest = previous.Manifest
@@ -168,7 +219,9 @@ AND EXISTS (SELECT 1 FROM json_each(cleanup_jobs.payload,'$.backup_ids') WHERE v
 		}
 		// A prepared job may combine several backups. Keep their latest result
 		// accurate while revoking this shared, unexecuted confirmation.
-		if _, err = tx.ExecContext(ctx, `UPDATE backup_records SET payload=json_set(payload,'$.record.source_cleanup_detail',?)
+		if _, err = tx.ExecContext(ctx, `UPDATE backup_records SET payload=json_set(
+CASE WHEN json_type(payload,'$.record.cleanup_result')='object' THEN json_set(payload,'$.record.cleanup_result.state','interrupted') ELSE payload END,
+'$.record.source_cleanup_detail',?)
 WHERE json_extract(payload,'$.record.source_cleanup_job')=?`, "关联预检因删除备份历史而失效，尚未执行；如需清理请重新预检", job); err != nil {
 			return nil, err
 		}

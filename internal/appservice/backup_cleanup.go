@@ -192,6 +192,10 @@ func (s *Media) recordBackupSourceCleanup(job catalog.CleanupJob) error {
 		}
 		row.SourceCleanupJob = job.ID
 		row.SourceCleanupDetail = detail
+		row.CleanupResult = cleanupBackupStatus(job)
+		if row.OriginalFiles != nil {
+			row.OriginalFiles.Stale = true
+		}
 		if err = s.catalog.SaveBackup(row); err != nil {
 			return err
 		}

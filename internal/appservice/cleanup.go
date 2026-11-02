@@ -20,6 +20,9 @@ type CleanupRequest struct {
 }
 
 func (s *Media) RecoverCleanup() error {
+	if err := s.catalog.RecoverBackupRestores(); err != nil {
+		return err
+	}
 	if err := s.catalog.RecoverCleanup(); err != nil {
 		return err
 	}

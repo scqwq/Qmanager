@@ -1,5 +1,11 @@
 # Qman / QQArchive — QQ 本地媒体管理
 
+## 0.4.5：备份历史状态与操作结果
+
+历史中直接显示备份包是否在登记位置、本地原文件最近核对状态、原文件清理结果和最近恢复结果。补回、相同跳过、冲突另存、仅Qman保存、部分完成/失败/取消/中断分开显示，附带数量和时间；删除备份包不会抹掉恢复结果。
+
+点“核对原文件”只检查这份成功备份对应的原路径与大小，不全账号扫描、不修改媒体索引或读取内容。断盘/未关联来源为未知，外部或媒体页改动后需重查；存在不证明内容完整或QQ识别，操作记录也不代表文件此刻仍在。
+
 ## 0.4.4：首次选择目录自动同步设置
 
 默认备份保存目录为空时，首次选定保存位置（或使用已选位置开始导出）会自动同步到设置。默认QQ目录为空时，首次选择读取源或加载备份的目标也会记住；已有默认值不被临时选择覆盖。
@@ -48,7 +54,7 @@
 
 ## 直接运行
 
-关闭旧版窗口，双击 `build/bin/Qman.exe` 或 `build/bin/Qman-0.4.4.exe`。完整试用包在 `build/releases/Qman-0.4.4-preview-win-x64.zip`，含程序、使用说明及依赖许可证。构建产物不纳入 Git。
+关闭旧版窗口，双击 `build/bin/Qman.exe` 或 `build/bin/Qman-0.4.5.exe`。完整试用包在 `build/releases/Qman-0.4.5-preview-win-x64.zip`，含程序、使用说明及依赖许可证。构建产物不纳入 Git。
 
 运行需要 Microsoft Edge WebView2 Runtime；用户不需要安装 Go、Node.js 或数据库服务。完整操作见 [使用说明](docs/USER_GUIDE.md)。
 
@@ -106,7 +112,7 @@ PNG/JPEG/GIF 支持受限缩略图，GIF 详情可尝试动图；视频通过本
 ```powershell
 .\tools\Build-Qman.ps1
 # 另存一个版本，避免正在运行的文件被占用：
-.\tools\Build-Qman.ps1 -OutputName Qman-0.4.4.exe
+.\tools\Build-Qman.ps1 -OutputName Qman-0.4.5.exe
 ```
 
 脚本将 Wails 工具和依赖缓存放在 `.local/`，安装锁定前端依赖，完成类型检查、生产构建、exe 及许可证说明。首次运行 Go 检查前应先构建前端，因为桌面入口会嵌入 `frontend/dist`。

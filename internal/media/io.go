@@ -22,6 +22,27 @@ func NativePath(path string) string {
 }
 
 func OpenRelative(root, relative string) (*os.File, error) { return openRead(root, relative) }
+
+// Presence checks only a fixed, already-selected path, without reading content.
+// A present path/length is not a content hash or original-instance assertion.
+func Presence(root, relative string, expectedBytes int64) string {
+	f, err := openRead(root, relative)
+	if err != nil {
+		if os.IsNotExist(err) && checkedAbsence(root, relative) {
+			return "missing"
+		}
+		return "unknown"
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "unknown"
+	}
+	if !info.Mode().IsRegular() || info.Size() != expectedBytes {
+		return "changed"
+	}
+	return "present"
+}
 func OpenItem(item Item) (*os.File, error) {
 	f, err := openRead(item.Root, item.Path)
 	if err != nil {

@@ -167,6 +167,7 @@ func (a *App) dialogDirectory(key string) string {
 	return ""
 }
 func (a *App) GetBackupHistory() ([]catalog.BackupRecord, error) { return a.media.Backups() }
+func (a *App) CheckBackupOriginals(id string) error              { return a.media.CheckBackupOriginals(a.ctx, id) }
 func (a *App) ChooseBackup(expectedID string) (*appservice.BackupPreview, error) {
 	choice, err := runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{Type: runtime.QuestionDialog, Title: "加载备份", Message: "请选择备份保存形式", Buttons: []string{"备份文件夹", "ZIP 文件", "取消"}, DefaultButton: "备份文件夹", CancelButton: "取消"})
 	if err != nil || choice == "取消" || choice == "" {

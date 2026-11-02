@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import FeedbackNotice from './FeedbackNotice.vue'
+import {errorFeedback} from '../feedback'
 import {computed,onMounted,onUnmounted,ref} from 'vue'
 import {api,pathSettingsChanged,type PathSettings} from '../api'
 import HelpTip from './HelpTip.vue'
@@ -21,7 +23,7 @@ async function choose(kind:'source'|'backup'){
 }
 async function save(){
  saving.value=true;error.value='';message.value=''
- try{const value=await api().SaveSettings({source_directory:source.value.trim(),backup_directory:backup.value.trim()});if(!disposed){saved.value=value;reset();message.value='默认路径已保存，下次打开仍会保留。'}}
+ try{const value=await api().SaveSettings({source_directory:source.value.trim(),backup_directory:backup.value.trim()});if(!disposed){saved.value=value;reset();message.value='默认目录已保存。'}}
  catch(e){if(!disposed)error.value=String(e)}finally{saving.value=false}
 }
 async function importSource(){
@@ -38,7 +40,7 @@ onUnmounted(()=>{disposed=true;window.removeEventListener(pathSettingsChanged,re
 <section class="settings-page">
  <p class="settings-intro">默认目录</p>
  <p v-if="loading" role="status">正在读取设置…</p>
- <p v-if="error" class="notice error" role="alert">{{error}}<button v-if="!loaded" class="text-button" :disabled="loading" @click="load">重新读取</button></p>
+ <div v-if="error"><FeedbackNotice :feedback="errorFeedback(error)"/><button v-if="!loaded" class="text-button" :disabled="loading" @click="load">重新读取设置</button></div>
  <p v-if="message" class="notice success" role="status">{{message}}</p>
  <form class="settings-form" @submit.prevent="save">
   <section class="settings-field">
@@ -58,7 +60,7 @@ onUnmounted(()=>{disposed=true;window.removeEventListener(pathSettingsChanged,re
  </form>
  <section class="settings-records" aria-label="应用记录">
   <div class="records-actions"><button type="button" class="secondary" :disabled="disabled" @click="emit('exportRecords')">备份应用记录</button><HelpTip label="关于备份应用记录" text="导出 Qman 保存的媒体清单、观察历史和操作记录的数据和缓存，不包含图片、视频等原文件。目前仅支持导出，缓存指索引查询数据。"/></div>
-  <p v-if="recordsError" class="notice error" role="alert">{{recordsError}}</p><p v-if="recordsMessage" class="notice success" role="status">{{recordsMessage}}</p>
+  <FeedbackNotice v-if="recordsError" :feedback="errorFeedback(recordsError)"/><p v-if="recordsMessage" class="notice success" role="status">{{recordsMessage}}</p>
  </section>
 </section>
 </template>

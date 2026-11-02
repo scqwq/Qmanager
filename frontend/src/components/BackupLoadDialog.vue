@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import FeedbackNotice from './FeedbackNotice.vue'
+import {errorFeedback} from '../feedback'
 import {ref} from 'vue'
 import {api,pathSettingsChanged,type BackupPreview} from '../api'
 const props=defineProps<{preview:BackupPreview}>()
@@ -15,7 +17,7 @@ async function choose(){choosing.value=true;error.value='';try{const path=await 
  <label v-if="target" class="check-line"><input type="checkbox" v-model="exited"/>我已手动退出 QQ，并确认上面的账号与目标目录</label></template>
  <p v-else>此备份没有可验证的账号路径映射，将复制到 Qman 独立媒体库，不猜测账号目录。</p>
  <p>首次选择目标且设置中尚无默认 QQ 目录时，会自动同步到设置；已有默认值不被单次选择覆盖。</p><p>相同内容跳过；同路径不同内容保留原文件并另存备份版本。写回失败时尝试保存到 Qman 独立媒体库。不会把清单复制进 QQ 目录，也不判断 QQ 是否识别。</p>
- <p v-if="error" class="notice error" role="alert">{{error}}</p>
+ <FeedbackNotice v-if="error" :feedback="errorFeedback(error)"/>
  <div class="modal-actions"><button class="secondary" @click="emit('close')">取消</button><button class="primary" :disabled="choosing||(!!target&&!!preview.restore_prefix&&!exited)" @click="emit('confirm',preview.record.id,preview.restore_prefix?target:'')">加载备份</button></div>
 </section></div>
 </template>

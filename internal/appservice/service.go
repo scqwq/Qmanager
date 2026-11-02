@@ -379,18 +379,46 @@ func (s *Media) backupDirectory(target string) (string, error) {
 	return path, nil
 }
 func (s *Media) RememberBackupDirectory(target string) (string, error) {
+	s.op.Lock()
+	defer s.op.Unlock()
+	if s.busy() {
+		return "", errors.New("请等待当前任务结束后选择目录")
+	}
 	path, err := s.backupDirectory(target)
 	if err != nil {
 		return "", err
 	}
+	settings, err := s.Settings()
+	if err != nil {
+		return "", err
+	}
+	if settings.BackupDirectory == "" {
+		settings.BackupDirectory = path
+		if _, err = s.saveSettingsLocked(settings); err != nil {
+			return "", err
+		}
+	}
 	return path, s.catalog.SetPreference("backup_directory", path)
 }
 func (s *Media) protected() ([]string, error) {
+	settings, err := s.Settings()
+	if err != nil {
+		return nil, err
+	}
+	return s.protectedWithDefault(settings.SourceDirectory)
+}
+func (s *Media) protectedWithDefault(defaultSource string) ([]string, error) {
 	sources, err := s.catalog.Sources()
 	if err != nil {
 		return nil, err
 	}
 	roots := []string{s.private}
+	if defaultSource != "" {
+		if _, e := media.Canonical(defaultSource); e != nil {
+			return nil, errors.New("默认 QQ 数据路径发生变化，请在设置中重新选择或清除")
+		}
+		roots = append(roots, defaultSource)
+	}
 	if restoreRoot := s.Preference("restore_directory"); restoreRoot != "" {
 		if _, e := media.Canonical(restoreRoot); e != nil {
 			return nil, errors.New("保存的恢复根发生变化，请重新选择核实")
@@ -451,6 +479,16 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 	free, err := storage.Free(target)
 	if err != nil || free < uint64(budget) {
 		return errors.New("备份创建与校验的临时空间不足，或无法查询目标空间")
+	}
+	settings, err := s.Settings()
+	if err != nil {
+		return err
+	}
+	if settings.BackupDirectory == "" {
+		settings.BackupDirectory = target
+		if _, err = s.saveSettingsLocked(settings); err != nil {
+			return err
+		}
 	}
 	s.stopLocked()
 	s.mu.Lock()

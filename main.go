@@ -70,8 +70,16 @@ func (a *App) UIReady() {
 }
 func (a *App) shutdown(context.Context) { a.media.Close() }
 func (a *App) ChooseSource() (string, error) {
-	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择 Tencent Files、账号目录或 nt_data（自动发现账号媒体）", CanCreateDirectories: false})
+	settings, err := a.media.Settings()
+	if err != nil {
+		return "", err
+	}
+	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择 Tencent Files、账号目录或 nt_data（自动发现账号媒体）", DefaultDirectory: appservice.DirectoryDialogStart(settings.SourceDirectory), CanCreateDirectories: false})
 	if err != nil || path == "" {
+		return "", err
+	}
+	path, err = a.media.RememberSourceDirectory(path, false)
+	if err != nil {
 		return "", err
 	}
 	result, err := a.media.Discover(a.ctx, path)
@@ -105,9 +113,37 @@ func (a *App) CreateBackupWithFormat(f media.Filter, format string) error {
 	}
 	return a.media.BackupFormat(a.ctx, path, f, format)
 }
-func (a *App) GetBackupDirectory() string { return a.dialogDirectory("backup_directory") }
+func (a *App) GetSettings() (appservice.PathSettings, error) { return a.media.Settings() }
+func (a *App) SaveSettings(settings appservice.PathSettings) (appservice.PathSettings, error) {
+	return a.media.SaveSettings(settings)
+}
+func (a *App) ImportDefaultSource() (string, error) { return a.media.ImportDefaultSource(a.ctx) }
+func (a *App) ChooseSettingsDirectory(kind, current string) (string, error) {
+	settings, err := a.media.Settings()
+	if err != nil {
+		return "", err
+	}
+	options := runtime.OpenDialogOptions{}
+	switch kind {
+	case "source":
+		options.Title = "选择默认 QQ 数据文件夹（如最外层 Tencent Files）"
+		options.DefaultDirectory = appservice.DirectoryDialogStart(current, settings.SourceDirectory)
+	case "backup":
+		options.Title = "选择默认备份保存目录（可新建文件夹）"
+		options.CanCreateDirectories = true
+		options.DefaultDirectory = appservice.DirectoryDialogStart(current, settings.BackupDirectory, a.media.Preference("backup_directory"))
+	default:
+		return "", fmt.Errorf("未知目录设置类型")
+	}
+	return runtime.OpenDirectoryDialog(a.ctx, options)
+}
+func (a *App) GetBackupDirectory() (string, error) { return a.media.BackupDirectory() }
 func (a *App) ChooseBackupDestination() (string, error) {
-	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择备份保存目录（可新建文件夹，复制并保留源文件）", DefaultDirectory: a.dialogDirectory("backup_directory"), CanCreateDirectories: true})
+	defaultPath, err := a.media.BackupDirectory()
+	if err != nil {
+		return "", err
+	}
+	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择备份保存目录（可新建文件夹，复制并保留源文件）", DefaultDirectory: appservice.DirectoryDialogStart(defaultPath, a.media.Preference("backup_directory")), CanCreateDirectories: true})
 	if err != nil || path == "" {
 		return "", err
 	}
@@ -117,6 +153,13 @@ func (a *App) CreateBackupAt(f media.Filter, format, path string) error {
 	return a.media.BackupFormat(a.ctx, path, f, format)
 }
 func (a *App) dialogDirectory(key string) string {
+	if key == "backup_directory" {
+		path, err := a.media.BackupDirectory()
+		if err != nil {
+			return ""
+		}
+		return appservice.DirectoryDialogStart(path, a.media.Preference(key))
+	}
 	path := a.media.Preference(key)
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		return path
@@ -151,7 +194,15 @@ func (a *App) PreviewHistoryBackup(id string) (appservice.BackupPreview, error) 
 	return a.media.PreviewHistoryBackup(a.ctx, id)
 }
 func (a *App) ChooseRestoreTarget() (string, error) {
-	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择最外层 Tencent Files（按备份内账号路径补回）", DefaultDirectory: a.dialogDirectory("restore_directory")})
+	target, _, err := a.media.RestoreDirectory()
+	if err != nil {
+		return "", err
+	}
+	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择最外层 Tencent Files（按备份内账号路径补回）", DefaultDirectory: appservice.DirectoryDialogStart(target, a.media.Preference("restore_directory"))})
+	if err != nil || path == "" {
+		return "", err
+	}
+	return a.media.RememberSourceDirectory(path, true)
 }
 func (a *App) LoadBackup(id, target string) error  { return a.media.RestoreBackup(a.ctx, id, target) }
 func (a *App) ViewLoadedBackup(id string) error    { return a.media.ViewLoadedBackup(a.ctx, id) }

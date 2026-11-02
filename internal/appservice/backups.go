@@ -19,6 +19,7 @@ type BackupPreview struct {
 	Record        catalog.BackupRecord `json:"record"`
 	RestorePrefix string               `json:"restore_prefix"`
 	Target        string               `json:"target"`
+	TargetNote    string               `json:"target_note,omitempty"`
 }
 type importState struct {
 	Manifest mediabackup.Manifest      `json:"manifest"`
@@ -134,7 +135,13 @@ func (s *Media) PreviewBackup(parent context.Context, path string, expectedID ..
 	}
 	var m mediabackup.Manifest
 	_ = json.Unmarshal([]byte(row.Manifest), &m)
-	preview = BackupPreview{Record: row, RestorePrefix: m.RestorePrefix, Target: s.Preference("restore_directory")}
+	preview = BackupPreview{Record: row, RestorePrefix: m.RestorePrefix}
+	if m.RestorePrefix != "" {
+		preview.Target, preview.TargetNote, err = s.RestoreDirectory()
+		if err != nil {
+			return BackupPreview{}, err
+		}
+	}
 	return preview, nil
 }
 func (s *Media) RestoreBackup(parent context.Context, id, target string) error {

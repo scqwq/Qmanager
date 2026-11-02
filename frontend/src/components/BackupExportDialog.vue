@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed,onMounted,onUnmounted,ref,watch} from 'vue'
-import {api,type Filter,type Estimate} from '../api'
+import {api,pathSettingsChanged,type Filter,type Estimate} from '../api'
 const props=defineProps<{initial:Filter;submitting?:boolean;submitError?:string;revision?:number}>()
 const emit=defineEmits<{close:[];confirm:[filter:Filter,format:string,path:string]}>()
 const scope=ref('current'),kind=ref(props.initial.kind),format=ref('directory')
@@ -29,7 +29,7 @@ async function update(quiet=false){
  catch(e){if(!disposed&&current===generation)error.value=String(e)}
  finally{if(!disposed&&current===generation)loading.value=false}
 }
-async function choose(){choosing.value=true;destinationError.value='';try{const path=await api().ChooseBackupDestination();if(path)destination.value=path}catch(e){destinationError.value=String(e)}finally{choosing.value=false}}
+async function choose(){choosing.value=true;destinationError.value='';try{const path=await api().ChooseBackupDestination();if(path){destination.value=path;window.dispatchEvent(new Event(pathSettingsChanged))}}catch(e){destinationError.value=String(e)}finally{choosing.value=false}}
 watch(filter,()=>void update(),{deep:true})
 onMounted(()=>{
  void update()
@@ -57,7 +57,7 @@ onUnmounted(()=>{disposed=true;generation++})
  <p>按原目录树逐路径复制，同内容文件也各存一份。保留原文件，复制后校验。{{format==='zip'?'ZIP 主要用于打包，不承诺压缩收益；创建时需同时保留目录载荷、ZIP 和校验暂存，峰值预算因此更高。':'请整体保留备份文件夹。'}}备份不加密。</p>
  <div class="backup-destination"><label>保存目录<input aria-label="备份保存目录" :value="destination" readonly placeholder="请选择 QQ 数据目录以外的位置" :title="destination"/></label><button class="secondary" :disabled="choosing||submitting" @click="choose">{{choosing?'正在选择…':'选择保存目录'}}</button></div>
  <p v-if="destinationError" class="notice error" role="alert">{{destinationError}}</p>
- <small>上次选择的保存目录会自动记住，可在目录窗口中新建文件夹。</small>
+ <small>优先使用设置中的默认保存目录；未设置时首次选择会自动保存为默认。可在目录窗口中新建文件夹。</small>
  <div class="modal-actions"><button class="secondary" :disabled="submitting" @click="emit('close')">取消</button><button class="primary" :disabled="submitting||choosing||!candidates||!destination||!!error" @click="emit('confirm',filter,format,destination)">{{submitting?'正在准备…':'核对并备份'}}</button></div>
 </section></div>
 </template>

@@ -20,6 +20,7 @@ import (
 	"qqarchive/internal/media"
 	"qqarchive/internal/mediabackup"
 	"qqarchive/internal/storage"
+	"strings"
 )
 
 //go:embed all:frontend/dist
@@ -113,7 +114,19 @@ func (a *App) CreateBackupWithFormat(f media.Filter, format string) error {
 	}
 	return a.media.BackupFormat(a.ctx, path, f, format)
 }
-func (a *App) GetSettings() (appservice.PathSettings, error) { return a.media.Settings() }
+func (a *App) GetSettings() (appservice.PathSettings, error)         { return a.media.Settings() }
+func (a *App) GetAppearance() (appservice.AppearanceSettings, error) { return a.media.Appearance() }
+func (a *App) SaveAppearance(settings appservice.AppearanceSettings) (appservice.AppearanceSettings, error) {
+	return a.media.SaveAppearance(settings)
+}
+func (a *App) DiscardAppearancePreview() { a.media.DiscardAppearancePreview() }
+func (a *App) ChooseAppearanceImage() (appservice.AppearanceImage, error) {
+	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择背景图片", Filters: []runtime.FileFilter{{DisplayName: "静态 PNG / JPEG 图片", Pattern: "*.png;*.jpg;*.jpeg"}}})
+	if err != nil || path == "" {
+		return appservice.AppearanceImage{}, err
+	}
+	return a.media.ImportAppearanceImage(path)
+}
 func (a *App) SaveSettings(settings appservice.PathSettings) (appservice.PathSettings, error) {
 	return a.media.SaveSettings(settings)
 }
@@ -267,6 +280,10 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 247, G: 248, B: 250, A: 255},
 		AssetServer: &assetserver.Options{Assets: assets, Middleware: func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/appearance/") {
+					a.media.ServeAppearance(w, r)
+					return
+				}
 				if len(r.URL.Path) >= 7 && r.URL.Path[:7] == "/media/" {
 					a.media.ServeHTTP(w, r)
 					return

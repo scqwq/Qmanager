@@ -4,6 +4,7 @@ import {errorFeedback} from '../feedback'
 import {computed,onMounted,onUnmounted,ref} from 'vue'
 import {api,pathSettingsChanged,type PathSettings} from '../api'
 import HelpTip from './HelpTip.vue'
+import AppearanceSettings from './AppearanceSettings.vue'
 
 const props=defineProps<{busy:boolean;recordsMessage?:string;recordsError?:string}>()
 const emit=defineEmits<{imported:[];exportRecords:[]}>()
@@ -38,6 +39,7 @@ onUnmounted(()=>{disposed=true;window.removeEventListener(pathSettingsChanged,re
 
 <template>
 <section class="settings-page">
+ <AppearanceSettings/>
  <p class="settings-intro">默认目录</p>
  <p v-if="loading" role="status">正在读取设置…</p>
  <div v-if="error"><FeedbackNotice :feedback="errorFeedback(error)"/><button v-if="!loaded" class="text-button" :disabled="loading" @click="load">重新读取设置</button></div>

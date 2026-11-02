@@ -54,6 +54,8 @@ type State struct {
 	Discovery        *discovery.Result          `json:"discovery"`
 }
 type Media struct {
+	appearanceMu      sync.Mutex
+	appearanceDraft   *appearanceImage
 	discoveryInterval time.Duration
 	recycleMedia      func(context.Context, media.Item, string) error
 	cleanupQQ         func() (bool, error)

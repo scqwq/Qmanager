@@ -13,6 +13,7 @@ import type {FeedbackPage} from './feedback'
 import FeedbackNotice from './components/FeedbackNotice.vue'
 import SourceDetails from './components/SourceDetails.vue'
 import LibraryStatus from './components/LibraryStatus.vue'
+import AppearanceBackground from './components/AppearanceBackground.vue'
 const historyPage=ref(false),exportFilter=ref<Filter|null>(null),loadPreview=ref<BackupPreview|null>(null)
 const settingsPage=ref(false)
 const state=ref<State>({phase:'idle',mode:'source',source:null,sources:[],scanned:0,bytes:0,report:null,watching:false,coverage:'',revision:0,error:'',message:'',backup:null,excluded:0,cached:false,last_full_scan:'',reconcile_seconds:120,index_bytes:0})
@@ -95,6 +96,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
 
 <template>
 <div class="shell">
+ <AppearanceBackground/>
  <aside class="sidebar">
   <div class="brand"><strong>Qman</strong><span>媒体管理</span></div>
   <label class="source-label" for="source-choice">{{state.mode==='backup'?'独立备份':'当前账号 / 来源'}}</label>

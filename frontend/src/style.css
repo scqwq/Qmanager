@@ -80,9 +80,11 @@ input:disabled, select:disabled { background: var(--soft); color: var(--muted); 
 .nav-item:not(:disabled):hover, .month-item:hover { background: var(--hover); }
 .nav-item span, .month-item span { font-size: 14px; font-weight: 400; color: var(--muted); }
 .history-nav { margin-top: 14px; }
-.month-heading { margin-top: 28px; }
+.month-heading { margin-top: 21px; padding: 0; border: 0; min-height: 0; background: transparent; line-height: inherit; text-align: left; align-self: flex-start; flex-shrink: 0; }
+.month-heading:hover { color: var(--accent); }
 .month-list { overflow: auto; flex: 1; min-height: 60px; scrollbar-width: thin; }
 .month-item { min-height: 36px; padding-block: 8px; font-size: 14px; }
+.month-list.month-mode .month-item, .month-list.month-mode .month-item span { font-size: 13px; }
 .sidebar-hint { margin: 12px 10px; line-height: 1.8; font-size: 14px; color: var(--muted); }
 .settings-nav { margin-top: auto; flex-shrink: 0; }
 .month-list + .settings-nav { margin-top: 18px; }
@@ -266,7 +268,7 @@ main { margin-left: 224px; min-width: 0; }
   .type-navigation { gap: 1px; }
   .nav-item { min-height: 36px; padding-block: 6px; }
   .history-nav { margin-top: 6px; }
-  .month-heading { margin-top: 12px; }
+  .month-heading { margin-top: 9px; }
   .month-list { min-height: 36px; }
   .month-list + .settings-nav { margin-top: 8px; }
   .sidebar-footer { display: none; }

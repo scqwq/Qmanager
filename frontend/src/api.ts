@@ -7,7 +7,7 @@ export interface AppearanceImage {id:string;name:string}
 export const pathSettingsChanged='qman:path-settings-changed'
 export interface Source { id:string;name:string;selected:string;resolved:string;linked:boolean }
 export interface SavedSource { id:string;name:string;root:string }
-export interface Item { id:string;instance_id:string;relative_path:string;kind:string;source_month:string;role:string;format:string;status:string;bytes:number;fs_modified_at:string;fs_created_at:string|null;preview:boolean;first_seen_at:string;last_seen_at:string;stable_observed_at:string|null;observation_method:string;confidence:string;coverage:string;stability:string }
+export interface Item { id:string;instance_id:string;relative_path:string;kind:string;source_month:string;role:string;format:string;status:string;bytes:number;fs_modified_at:string;fs_created_at:string|null;preview:boolean;cover_id?:string;first_seen_at:string;last_seen_at:string;stable_observed_at:string|null;observation_method:string;confidence:string;coverage:string;stability:string }
 export interface Bucket {kind:string;month:string;role:string;files:number;bytes:number}
 export interface Report {update_kind?:string;quick?:boolean;entries_checked?:number;known_skipped?:number;inspected?:number; partial:boolean;header_reads:number;reused:number;indexed_updates:number; started_at:string;finished_at:string;complete:boolean;cancelled:boolean;files:number;bytes:number;issues:{path:string;code:string}[];issue_count:number;buckets:Bucket[] }
 export interface BackupResult {path:string;files:number;payload_files:number;excluded:number;bytes:number}

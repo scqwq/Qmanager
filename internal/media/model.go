@@ -19,6 +19,8 @@ type Source struct {
 	Linked   bool    `json:"linked"`
 	Scopes   []Scope `json:"scopes"`
 }
+
+// CoverID is derived for display only; it is never a file identity or backup entry.
 type Item struct {
 	InstanceID         string     `json:"instance_id"`
 	Identity           string     `json:"identity"`
@@ -41,6 +43,7 @@ type Item struct {
 	ModifiedAt         time.Time  `json:"fs_modified_at"`
 	CreatedAt          *time.Time `json:"fs_created_at"`
 	Preview            bool       `json:"preview"`
+	CoverID            string     `json:"cover_id,omitempty"`
 	Path               string     `json:"-"`
 	Root               string     `json:"-"`
 	InfoIdentity       any        `json:"-"`
@@ -83,6 +86,8 @@ type Report struct {
 	Items           []Item    `json:"-"`
 }
 type Filter struct {
+	// Display-only restriction. Never accepted from JSON or inherited by backups.
+	HideVideoCovers bool   `json:"-"`
 	MonthFrom       string `json:"month_from,omitempty"`
 	MonthTo         string `json:"month_to,omitempty"`
 	IncludeBaseline bool   `json:"include_baseline"`
@@ -134,6 +139,9 @@ func Paginate(items []Item, f Filter) Page {
 }
 
 func Matches(item Item, f Filter) bool {
+	if f.HideVideoCovers && !VisibleRole(item.Kind, item.Role, f.Role) {
+		return false
+	}
 	month := item.SourceMonth
 	if f.View == "observed" {
 		if (item.Method == "baseline" && !f.IncludeBaseline) || item.FirstSeenAt.IsZero() {

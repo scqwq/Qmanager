@@ -117,6 +117,9 @@ func cacheWhere(source string, f media.Filter) (string, []interface{}, error) {
 	if f.Role != "" {
 		add("c.role=?", f.Role)
 	}
+	if f.HideVideoCovers && f.Role != "cover" {
+		clauses = append(clauses, "NOT (c.kind='video' AND c.role='cover')")
+	}
 	if f.Status != "" {
 		add("c.status=?", f.Status)
 	}

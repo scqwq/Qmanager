@@ -106,7 +106,7 @@ func (a *App) GetMediaURL(id string) (string, error)           { return a.media.
 func (a *App) GetHistory(id string) ([]catalog.History, error) { return a.media.History(id) }
 func (a *App) GetBuckets(view string) []media.Bucket           { return a.media.Buckets(view) }
 func (a *App) GetFilterBuckets(f media.Filter) []media.Bucket {
-	return a.media.Buckets(f.View, f.IncludeBaseline)
+	return a.media.FilterBuckets(f)
 }
 func (a *App) CreateBackup(f media.Filter) error {
 	return a.CreateBackupWithFormat(f, "directory")
@@ -268,7 +268,7 @@ func startDiagnostics(private string) {
 		if e = logger.EnableCrashOutput(); e != nil {
 			logger.Record(context.Background(), "warning", "crash.capture_unavailable", "Go 崩溃详情记录未能启用")
 		}
-		logger.Record(context.Background(), "info", "app.start", "Qman 0.6.0 / diagnostics-1 启动")
+		logger.Record(context.Background(), "info", "app.start", "Qman 0.6.3 / diagnostics-1 启动")
 	}
 }
 func main() {

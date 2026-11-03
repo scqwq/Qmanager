@@ -292,9 +292,14 @@ func (s *Media) State() State {
 	return state
 }
 func (s *Media) Page(f media.Filter) media.Page {
+	f.HideVideoCovers = true
 	s.mu.RLock()
 	if s.state.Mode == "backup" {
 		p := media.Paginate(s.items, f)
+		covers := media.MatchVideoCovers(p.Items, s.items)
+		for i := range p.Items {
+			p.Items[i].CoverID = covers[p.Items[i].ID].ID
+		}
 		s.mu.RUnlock()
 		return p
 	}
@@ -308,8 +313,13 @@ func (s *Media) Page(f media.Filter) media.Page {
 		s.fail(err)
 		return media.Page{Items: []media.Item{}}
 	}
+	covers, err := s.catalog.VideoCovers(context.Background(), source.ID, p.Items)
+	if err != nil {
+		s.fail(err)
+	}
 	for i := range p.Items {
 		p.Items[i] = media.Bind(p.Items[i], *source)
+		p.Items[i].CoverID = covers[p.Items[i].ID].ID
 	}
 	return p
 }
@@ -683,6 +693,14 @@ func (s *Media) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		http.NotFound(w, r)
 		return
+	}
+	if media.VideoCoverPath(item) != "" {
+		cover, found := s.videoCover(item)
+		if !found {
+			http.Error(w, "暂时无法预览", http.StatusUnprocessableEntity)
+			return
+		}
+		item = cover
 	}
 	select {
 	case s.previews <- struct{}{}:

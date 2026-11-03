@@ -83,6 +83,7 @@ func (s *Media) PrepareMediaDelete(parent context.Context, request CleanupReques
 		}
 		var items []media.Item
 		if request.AllMatching {
+			request.Filter.HideVideoCovers = true
 			if len(request.IDs) != 0 {
 				return errors.New("选择方式冲突")
 			}

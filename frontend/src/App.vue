@@ -18,7 +18,9 @@ const historyPage=ref(false),exportFilter=ref<Filter|null>(null),loadPreview=ref
 const settingsPage=ref(false)
 const state=ref<State>({phase:'idle',mode:'source',source:null,sources:[],scanned:0,bytes:0,report:null,watching:false,coverage:'',revision:0,error:'',message:'',backup:null,excluded:0,cached:false,last_full_scan:'',reconcile_seconds:120,index_bytes:0})
 const page=ref<Page>({items:[],total:0,bytes:0,baseline_files:0}),buckets=ref<Bucket[]>([])
+const visibleFiles=computed(()=>buckets.value.reduce((count,b)=>count+b.files,0))
 const year=ref('')
+const sidebarPeriod=ref<'month'|'year'>('month')
 const kind=ref(''),month=ref(''),role=ref(''),status=ref(''),size=ref(''),offset=ref(0),view=ref('source'),from=ref(''),to=ref('')
 const includeBaseline=ref(false),querying=ref(false)
 const error=ref(''),action=ref(false),desktop=ref(hasDesktop()),listing=ref(false),selected=ref<Item|null>(null)
@@ -46,17 +48,18 @@ function readiness(item:Item){
  return item.stability==='stable_heuristic'?'':item.stability==='unstable'?'文件尚不稳定':'待稳定性核对'
 }
 const sourceLabel=(s:{name:string;root:string})=>{const parts=s.root.split(String.fromCharCode(92)).join('/').split('/');const at=parts.map(p=>p.toLowerCase()).lastIndexOf('nt_data');const account=at>=2&&parts[at-1].toLowerCase()==='nt_qq'?parts[at-2]:'';return account&&s.name!==account?`${s.name} · ${account}`:s.name}
-const thumb=(i:Item)=>`/media/thumbnail/${encodeURIComponent(i.id)}`
+const thumb=(i:Item)=>`/media/thumbnail/${encodeURIComponent(i.id)}${i.cover_id?`?cover=${encodeURIComponent(i.cover_id)}&revision=${state.value.revision}`:''}`
 const failPreview=(id:string)=>{failed.value=new Set([...failed.value,id])}
 const title=computed(()=>month.value?`${month.value==='__unknown__'?'月份未知':month.value} · ${kind.value?kindName(kind.value):'全部类型'}`:kind.value?kindName(kind.value):'全部类型')
-const years=computed(()=>[...new Set(buckets.value.filter(b=>!kind.value||b.kind===kind.value).map(b=>b.month.slice(0,4)).filter(y=>/^\d{4}$/.test(y)))].sort().reverse())
 const availableMonths=computed(()=>{const m=new Map<string,number>();for(const b of buckets.value){if(kind.value&&b.kind!==kind.value)continue;m.set(b.month,(m.get(b.month)??0)+b.files)}return [...m].sort(([a],[b])=>b.localeCompare(a))})
+const availableYears=computed(()=>{const y=new Map<string,number>();for(const [m,count] of availableMonths.value){const value=m.slice(0,4);if(/^\d{4}$/.test(value))y.set(value,(y.get(value)??0)+count)}return [...y].sort(([a],[b])=>b.localeCompare(a))})
+const years=computed(()=>availableYears.value.map(([y])=>y))
 const months=computed(()=>availableMonths.value.filter(([m])=>!year.value||m.startsWith(year.value+'-')))
 function filter():Filter{return {include_baseline:includeBaseline.value,kind:kind.value,month:month.value,month_from:year.value?year.value+'-01':'',month_to:year.value?year.value+'-12':'',role:role.value,status:status.value,min_bytes:Number(size.value)||0,max_bytes:0,offset:offset.value,limit:60,view:view.value,from:from.value,to:to.value}}
 async function load(){const id=++generation;const source=state.value.source?.id;querying.value=true;if(from.value&&to.value&&from.value>to.value){error.value='开始日期不能晚于结束日期';querying.value=false;return}error.value='';try{const [p,bs]=await Promise.all([api().GetPage(filter()),api().GetFilterBuckets(filter())]);if(id===generation&&!disposed&&source===state.value.source?.id){page.value=p;buckets.value=bs}}catch(e){error.value=String(e)}finally{if(id===generation)querying.value=false}}
 function selectYear(){month.value='';from.value='';to.value=''};
-function selectMonth(value:string){month.value=value;if(value&&value!=='__unknown__')year.value=value.slice(0,4);else if(value==='__unknown__')year.value='';if(view.value==='observed'){from.value='';to.value=''}}
-function selectSidebarMonth(value:string){if(!value)year.value='';selectMonth(value)}
+function selectMonth(value:string){month.value=value;if(view.value==='observed'){from.value='';to.value=''}}
+function selectSidebarYear(value:string){year.value=value;selectYear()}
 function queryDate(){year.value='';month.value='';offset.value=0;void load()}
 function resetFilters(){year.value='';kind.value='';month.value='';from.value='';to.value='';role.value='';status.value='';size.value='';offset.value=0;void load()}
 function showInitialImport(){includeBaseline.value=true;offset.value=0}
@@ -87,6 +90,7 @@ async function rename(name:string){await run(()=>api().RenameSource(name))}
 async function inspect(item:Item){selected.value=item;mediaURL.value='';playError.value=false;history.value=[];try{const h=await api().GetHistory(item.id);if(selected.value?.id===item.id)history.value=h}catch{};if(item.format==='iso-bmff'||item.preview){try{const url=await api().GetMediaURL(item.id);if(selected.value?.id===item.id)mediaURL.value=url}catch{playError.value=true}}}
 function closeDetail(){selected.value=null;mediaURL.value='';history.value=[]}
 function onKey(e:KeyboardEvent){if(e.key==='Escape'){closeDetail();manager.dialog=null;if(!backupSubmitting.value)exportFilter.value=null;loadPreview.value=null}}
+watch(()=>state.value.revision,()=>{failed.value=new Set()})
 watch([year,kind,month,role,status,size,view,from,to,includeBaseline],()=>{offset.value=0;if(desktop.value)void load()})
 watch(view,()=>{year.value='';month.value='';from.value='';to.value=''})
 watch([from,to],()=>{if(view.value==='observed'&&(from.value||to.value)){month.value='';year.value=''}})
@@ -108,20 +112,26 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
   </select>
   <button class="source-choose" :disabled="!desktop||busy" @click="choose">选择 QQ 数据文件夹</button>
   <nav class="type-navigation" aria-label="媒体导航">
-   <button class="nav-item" :class="{active:!settingsPage&&!historyPage&&!kind}" @click="settingsPage=false;historyPage=false;kind='';month=''">全部类型 <span v-if="state.report">{{state.report.files.toLocaleString()}}</span></button>
+   <button class="nav-item" :class="{active:!settingsPage&&!historyPage&&!kind}" @click="settingsPage=false;historyPage=false;kind='';month=''">全部类型 <span v-if="state.report">{{visibleFiles.toLocaleString()}}</span></button>
    <button v-for="k in kinds" :key="k.id" class="nav-item" :class="{active:!settingsPage&&!historyPage&&kind===k.id}" @click="settingsPage=false;historyPage=false;kind=k.id;month=''">{{k.name}}</button>
    <button class="nav-item history-nav" :class="{active:!settingsPage&&historyPage}" @click="settingsPage=false;historyPage=true">备份历史</button>
   </nav>
   <template v-if="!settingsPage&&!historyPage">
-   <div class="nav-label month-heading">{{view==='observed'?'发现月份':'来源月份'}}</div>
-   <div class="month-list">
-    <button class="month-item" :class="{active:!month&&!year}" @click="selectSidebarMonth('')">全部月份</button>
-    <button v-for="[m,count] in availableMonths" :key="m" class="month-item" :class="{active:month===(m||'__unknown__')}" @click="selectSidebarMonth(m||'__unknown__')">{{m||'月份未知'}}<span>{{count}}</span></button>
-    <p v-if="!availableMonths.length" class="sidebar-hint">{{view==='observed'&&!includeBaseline?'首次导入记录默认不计新增。':'建立索引后可按月份查看。'}}</p>
+   <button type="button" class="nav-label month-heading" aria-controls="sidebar-period-list" :aria-pressed="sidebarPeriod==='year'" :title="sidebarPeriod==='month'?'点击切换为年份':'点击切换为月份'" @click="sidebarPeriod=sidebarPeriod==='month'?'year':'month'">{{view==='observed'?(sidebarPeriod==='month'?'发现月份':'发现年份'):(sidebarPeriod==='month'?'来源月份':'来源年份')}}</button>
+   <div id="sidebar-period-list" class="month-list" :class="{'month-mode':sidebarPeriod==='month'}">
+    <template v-if="sidebarPeriod==='year'">
+     <button class="month-item" :class="{active:!year}" @click="selectSidebarYear('')">全部年份</button>
+     <button v-for="[y,count] in availableYears" :key="y" class="month-item" :class="{active:year===y}" @click="selectSidebarYear(y)">{{y}}<span>{{count}}</span></button>
+    </template>
+    <template v-else>
+     <button class="month-item" :class="{active:!month}" @click="selectMonth('')">全部月份</button>
+     <button v-for="[m,count] in months" :key="m" class="month-item" :class="{active:month===(m||'__unknown__')}" @click="selectMonth(m||'__unknown__')">{{m||'月份未知'}}<span>{{count}}</span></button>
+    </template>
+    <p v-if="sidebarPeriod==='month'?!months.length:!availableYears.length" class="sidebar-hint">{{view==='observed'&&!includeBaseline?'首次导入记录默认不计新增。':'当前范围没有可用日期。'}}</p>
    </div>
   </template>
   <button class="nav-item settings-nav" :class="{active:settingsPage}" :disabled="!desktop" @click="settingsPage=true;historyPage=false">设置</button>
-  <div class="sidebar-footer">本机处理 <span>0.6.0</span></div>
+  <div class="sidebar-footer">本机处理 <span>0.6.3</span></div>
  </aside>
  <main>
   <header class="topbar">
@@ -154,7 +164,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
        <div class="result-caption"><div><strong>当前筛选 {{page.total.toLocaleString()}} 个文件</strong><span>逻辑大小 {{bytes(page.bytes)}} · 含原件、预览和临时资源，不是可释放空间</span></div><button class="text-button" @click="resetFilters">清空筛选</button></div>
        <div v-if="querying" class="query-indicator" role="status">正在更新筛选结果…</div>
        <div v-if="!page.items.length&&!querying" class="no-results"><template v-if="view==='observed'&&!includeBaseline&&page.baseline_files"><p>{{page.baseline_files.toLocaleString()}} 个文件属于首次导入记录，默认不列为后续新增。</p><button class="secondary" @click="showInitialImport">查看首次导入记录</button></template><template v-else><p>没有符合当前条件的文件。</p><button class="secondary" @click="resetFilters">清空筛选</button></template></div>
-       <div v-else class="media-grid" :class="{listing}"><div v-for="item in page.items" :key="item.id" class="media-entry" :class="{selected:manager.active&&manager.isSelected(item)}"><button class="media-card" @click="manager.active?manager.select(item):inspect(item)"><div class="media-preview"><img v-if="item.preview&&!failed.has(item.id)" :src="thumb(item)" alt="静态缩略预览" loading="lazy" @error="failPreview(item.id)"/><div v-else class="media-placeholder"><span>{{kindName(item.kind)}}</span><small>{{failed.has(item.id)?'预览失败':item.format==='iso-bmff'?'点击尝试播放':item.format==='silk'?'SILK · 原文件保留':item.status==='recognized'?'暂不支持预览':statuses[item.status]}}</small></div><span class="role-tag">{{roles[item.role]}}</span></div><div class="media-info"><strong :title="item.relative_path">{{name(item)}}</strong><div><span>{{item.source_month||'月份未知'}} · {{item.format.toUpperCase()}}</span><span>{{bytes(item.bytes)}}</span></div><small class="item-state"><span v-if="readiness(item)" class="pending">{{readiness(item)}} · </span>{{methods[item.observation_method]??'时间证据未知'}}</small></div></button><label v-if="manager.active" class="media-check"><input type="checkbox" :aria-label="'选择 '+item.relative_path" :checked="manager.isSelected(item)" :disabled="busy" @change="manager.select(item)"/></label></div></div>
+       <div v-else class="media-grid" :class="{listing}"><div v-for="item in page.items" :key="item.id" class="media-entry" :class="{selected:manager.active&&manager.isSelected(item)}"><button class="media-card" @click="manager.active?manager.select(item):inspect(item)"><div class="media-preview"><img v-if="(item.preview||item.cover_id)&&!failed.has(item.id)" :src="thumb(item)" alt="静态缩略预览" loading="lazy" @error="failPreview(item.id)"/><div v-else class="media-placeholder"><span>{{kindName(item.kind)}}</span><small>{{failed.has(item.id)?'预览失败':item.format==='iso-bmff'?'点击尝试播放':item.format==='silk'?'SILK · 原文件保留':item.status==='recognized'?'暂不支持预览':statuses[item.status]}}</small></div><span class="role-tag">{{roles[item.role]}}</span></div><div class="media-info"><strong :title="item.relative_path">{{name(item)}}</strong><div><span>{{item.source_month||'月份未知'}} · {{item.format.toUpperCase()}}</span><span>{{bytes(item.bytes)}}</span></div><small class="item-state"><span v-if="readiness(item)" class="pending">{{readiness(item)}} · </span>{{methods[item.observation_method]??'时间证据未知'}}</small></div></button><label v-if="manager.active" class="media-check"><input type="checkbox" :aria-label="'选择 '+item.relative_path" :checked="manager.isSelected(item)" :disabled="busy" @change="manager.select(item)"/></label></div></div>
        <div class="pagination"><span>每页最多 60 个文件</span><button class="secondary" :disabled="offset===0" @click="offset=Math.max(0,offset-60)">上一页</button><span>{{Math.floor(offset/60)+1}} / {{Math.max(1,Math.ceil(page.total/60))}}</span><button class="secondary" :disabled="offset+60>=page.total" @click="offset+=60">下一页</button></div>
       </section>
       <details v-if="state.report.issue_count" class="issues"><summary>扫描问题（{{state.report.issue_count}}，最多展示 1000 项）</summary><div v-for="(issue,i) in state.report.issues" :key="i"><code>{{issue.path}}</code><span>{{issues[issue.code]??issue.code}}</span></div></details>
@@ -167,7 +177,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
    </template>
   </div>
  </main>
- <div v-if="selected" class="modal-backdrop" @click.self="closeDetail"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="媒体详情"><button class="close-modal" @click="closeDetail" aria-label="关闭详情">×</button><div class="detail-preview"><video v-if="mediaURL&&selected.format==='iso-bmff'&&!playError" :src="mediaURL" controls preload="metadata" @error="playError=true"></video><img v-else-if="mediaURL&&!playError" :src="mediaURL" alt="媒体预览" @error="playError=true"/><span v-else>{{playError?'此文件当前无法预览；可能缺少对应编码支持。':'此格式暂不支持内置预览，原文件已保留。'}}</span></div><h2>{{name(selected)}}</h2><dl><dt>源相对路径</dt><dd>{{selected.relative_path}}</dd><dt>类型 / 来源角色</dt><dd>{{kindName(selected.kind)}} / {{roles[selected.role]}}</dd><dt>来源月份</dt><dd>{{selected.source_month||'未知'}}</dd><dt>逻辑大小 / 格式</dt><dd>{{bytes(selected.bytes)}} / {{selected.format}} · {{statuses[selected.status]}}</dd><dt>首次发现</dt><dd>{{fmtTime(selected.first_seen_at)}} · {{methods[selected.observation_method]??'未知'}}</dd><dt>稳定性</dt><dd>{{selected.stability==='stable_heuristic'?'通过稳定性检查（启发式）':readiness(selected)||'状态未知'}}</dd><dt>稳定观察时间</dt><dd>{{fmtTime(selected.stable_observed_at)}}</dd><dt>文件系统创建时间</dt><dd>{{fmtTime(selected.fs_created_at)}}</dd><dt>文件系统修改时间</dt><dd>{{fmtTime(selected.fs_modified_at)}}</dd></dl><details v-if="history.length" class="history"><summary>查看已保存的观察记录（{{history.length}}）</summary><p v-for="(h,i) in history" :key="i">{{fmtTime(h.at)}} · {{eventNames[h.kind]??h.kind}}</p></details><p>首次发现是本工具的观察证据，不是 QQ 下载时间；稳定和文件头识别也不证明完整下载。原件、封面和临时文件分别管理。</p></section></div>
+ <div v-if="selected" class="modal-backdrop" @click.self="closeDetail"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="媒体详情"><button class="close-modal" @click="closeDetail" aria-label="关闭详情">×</button><div class="detail-preview"><video v-if="mediaURL&&selected.format==='iso-bmff'&&!playError" :src="mediaURL" :poster="selected.cover_id&&!failed.has(selected.id)?thumb(selected):undefined" controls preload="metadata" @error="playError=true"></video><img v-else-if="mediaURL&&!playError" :src="mediaURL" alt="媒体预览" @error="playError=true"/><span v-else>{{playError?'此文件当前无法预览；可能缺少对应编码支持。':'此格式暂不支持内置预览，原文件已保留。'}}</span></div><h2>{{name(selected)}}</h2><dl><dt>源相对路径</dt><dd>{{selected.relative_path}}</dd><dt>类型 / 来源角色</dt><dd>{{kindName(selected.kind)}} / {{roles[selected.role]}}</dd><dt>来源月份</dt><dd>{{selected.source_month||'未知'}}</dd><dt>逻辑大小 / 格式</dt><dd>{{bytes(selected.bytes)}} / {{selected.format}} · {{statuses[selected.status]}}</dd><dt>首次发现</dt><dd>{{fmtTime(selected.first_seen_at)}} · {{methods[selected.observation_method]??'未知'}}</dd><dt>稳定性</dt><dd>{{selected.stability==='stable_heuristic'?'通过稳定性检查（启发式）':readiness(selected)||'状态未知'}}</dd><dt>稳定观察时间</dt><dd>{{fmtTime(selected.stable_observed_at)}}</dd><dt>文件系统创建时间</dt><dd>{{fmtTime(selected.fs_created_at)}}</dd><dt>文件系统修改时间</dt><dd>{{fmtTime(selected.fs_modified_at)}}</dd></dl><details v-if="history.length" class="history"><summary>查看已保存的观察记录（{{history.length}}）</summary><p v-for="(h,i) in history" :key="i">{{fmtTime(h.at)}} · {{eventNames[h.kind]??h.kind}}</p></details><p>首次发现是本工具的观察证据，不是 QQ 下载时间；稳定和文件头识别也不证明完整下载。原件、封面和临时文件分别管理。</p></section></div>
  <MediaDeleteDialog v-if="manager.dialog" :job="manager.dialog" :busy="busy" :read-only="manager.dialogReadOnly" @close="manager.dialog=null" @confirm="manager.execute"/><BackupExportDialog v-if="exportFilter" :initial="exportFilter" :submitting="backupSubmitting" :submit-error="backupError" :revision="state.revision" @close="exportFilter=null" @confirm="backup"/>
  <BackupLoadDialog v-if="loadPreview" :preview="loadPreview" @close="loadPreview=null" @confirm="confirmLoad"/>
 </div>

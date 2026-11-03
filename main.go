@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"qqarchive/internal/appservice"
 	"qqarchive/internal/catalog"
+	"qqarchive/internal/diagnostics"
 	"qqarchive/internal/media"
 	"qqarchive/internal/mediabackup"
 	"qqarchive/internal/storage"
@@ -34,8 +35,10 @@ type App struct {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	startDiagnostics(a.private)
 	if err := a.media.RecoverCleanup(); err != nil {
 		log.Print("未能核对上次媒体删除任务，请检查私有索引")
+		diagnostics.Record(ctx, "error", "cleanup.recovery_failed", "上次任务状态未能核对，请检查应用索引")
 	}
 	if os.Getenv("QMAN_SMOKE_CACHE_ONLY") == "1" {
 		return
@@ -63,7 +66,8 @@ func (a *App) UIReady() {
 			day := withInitial.Items[0].FirstSeenAt.Local().Format("2006-01-02")
 			dateMatches = a.media.Page(media.Filter{View: "observed", IncludeBaseline: true, From: day, To: day}).Total
 		}
-		b, _ := json.Marshal(map[string]interface{}{"update_kind": s.Report.UpdateKind, "known_skipped": s.Report.KnownSkipped, "inspected": s.Report.Inspected, "files": s.Report.Files, "complete": s.Report.Complete, "cached": s.Cached, "width": w, "height": h, "bridge": "vue-webview2-go", "observed_default": defaultDates.Total, "observed_with_initial": withInitial.Total, "initial_date_matches": dateMatches})
+		diag, diagErr := a.GetDiagnostics()
+		b, _ := json.Marshal(map[string]interface{}{"update_kind": s.Report.UpdateKind, "known_skipped": s.Report.KnownSkipped, "inspected": s.Report.Inspected, "files": s.Report.Files, "complete": s.Report.Complete, "cached": s.Cached, "width": w, "height": h, "bridge": "vue-webview2-go", "observed_default": defaultDates.Total, "observed_with_initial": withInitial.Total, "initial_date_matches": dateMatches, "diagnostics_ready": diagErr == nil && len(diag.Entries) > 0 && diag.Directory == filepath.Join(a.private, "logs")})
 		if os.WriteFile(filepath.Join(a.private, "ui-smoke.json"), b, 0600) == nil {
 			runtime.Quit(a.ctx)
 		}
@@ -115,6 +119,7 @@ func (a *App) CreateBackupWithFormat(f media.Filter, format string) error {
 	return a.media.BackupFormat(a.ctx, path, f, format)
 }
 func (a *App) GetSettings() (appservice.PathSettings, error)         { return a.media.Settings() }
+func (a *App) GetDiagnostics() (diagnostics.Snapshot, error)         { return diagnostics.Read() }
 func (a *App) GetAppearance() (appservice.AppearanceSettings, error) { return a.media.Appearance() }
 func (a *App) SaveAppearance(settings appservice.AppearanceSettings) (appservice.AppearanceSettings, error) {
 	return a.media.SaveAppearance(settings)
@@ -248,7 +253,30 @@ func (a *App) ExportIndex() (string, error) {
 	return a.media.ExportIndex(a.ctx, path)
 }
 
+// Wails calls startup only after acquiring its single-instance lock. Opening
+// crash/log files earlier could interfere with a running instance's handles.
+func startDiagnostics(private string) {
+	logDir := filepath.Join(private, "logs")
+	if info, e := os.Lstat(logDir); e == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+		log.Print("日志目录类型异常，未启用日志")
+	} else if e = storage.Private(logDir); e != nil {
+		log.Print("无法建立私有日志目录")
+	} else if logger, e := diagnostics.Open(logDir); e != nil {
+		log.Print("无法启动本地诊断日志")
+	} else {
+		diagnostics.SetDefault(logger)
+		if e = logger.EnableCrashOutput(); e != nil {
+			logger.Record(context.Background(), "warning", "crash.capture_unavailable", "Go 崩溃详情记录未能启用")
+		}
+		logger.Record(context.Background(), "info", "app.start", "Qman 0.6.0 / diagnostics-1 启动")
+	}
+}
 func main() {
+	defer func() {
+		if logger := diagnostics.Default(); logger != nil {
+			_ = logger.Close()
+		}
+	}()
 	private := os.Getenv("QMAN_DATA_DIR")
 	if private == "" {
 		private = filepath.Join(os.Getenv("LOCALAPPDATA"), "Qman")
@@ -297,4 +325,5 @@ func main() {
 	}); err != nil {
 		log.Fatal("桌面程序启动失败：", err)
 	}
+	diagnostics.Record(context.Background(), "info", "app.exit", "应用正常结束")
 }

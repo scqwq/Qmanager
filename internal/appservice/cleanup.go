@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"qqarchive/internal/catalog"
+	"qqarchive/internal/diagnostics"
 	"qqarchive/internal/media"
 	"qqarchive/internal/mediacleanup"
 	"time"
@@ -138,6 +139,8 @@ func (s *Media) prepareCleanup(ctx context.Context, source media.Source, f media
 	if err != nil {
 		return err
 	}
+	ctx = diagnostics.WithItem(ctx, job.ID, "")
+	diagnostics.Record(ctx, "info", "cleanup.prepare", fmt.Sprintf("开始核对 %d 个文件", len(items)))
 	if err = s.recordBackupSourceCleanup(job); err != nil {
 		_ = s.catalog.CleanupState(job.ID, "interrupted")
 		return err
@@ -180,7 +183,11 @@ func (s *Media) prepareCleanup(ctx context.Context, source media.Source, f media
 			}
 		}
 		if err = s.catalog.SaveCleanupItem(ctx, job, row); err != nil {
+			diagnostics.Record(diagnostics.WithItem(ctx, job.ID, item.InstanceID), "error", "cleanup.save_failed", "预检结果未能写入数据库")
 			return err
+		}
+		if row.Status == "skipped" {
+			diagnostics.Record(diagnostics.WithItem(ctx, job.ID, item.InstanceID), "warning", "cleanup.preflight_skipped", "文件未通过预检；具体原因见清理任务")
 		}
 		bytes += item.Bytes
 		s.backupProgress(i+1, bytes)
@@ -209,6 +216,8 @@ func (s *Media) ExecuteMediaDelete(parent context.Context, id string) error {
 		if err != nil {
 			return err
 		}
+		ctx = diagnostics.WithItem(ctx, id, "")
+		diagnostics.Record(ctx, "info", "cleanup.execute", "开始执行固定清单回收")
 		if job.State == "completed" || job.State == "partial" {
 			s.mu.Lock()
 			s.state.Cleanup = &job
@@ -227,8 +236,13 @@ func (s *Media) ExecuteMediaDelete(parent context.Context, id string) error {
 			return errors.New("来源已切换，请在原账号重新选择")
 		}
 		running, err := s.cleanupQQ()
-		if err != nil || running {
-			return errors.New("请先手动退出 QQ，再确认删除；无法核实进程时不执行")
+		if err != nil {
+			diagnostics.Record(ctx, "warning", "cleanup.qq_unknown", "无法确认 QQ 进程状态，未执行回收")
+			return errors.New("无法确认 QQ 是否完全退出，本次未执行回收；请检查后重试。")
+		}
+		if running {
+			diagnostics.Record(ctx, "warning", "cleanup.qq_running", "检测到 QQ 进程，未执行回收")
+			return errors.New("检测到 QQ 仍在运行，目前不区分账号，请完全退出后回收。")
 		}
 		if _, err = media.Canonical(job.Root); err != nil {
 			return err
@@ -253,6 +267,7 @@ func (s *Media) ExecuteMediaDelete(parent context.Context, id string) error {
 			}
 			summary, e := s.catalog.Cleanup(id)
 			if e == nil {
+				diagnostics.Record(ctx, "info", "cleanup.finished", fmt.Sprintf("回收=%d，跳过=%d，失败=%d，待核对=%d，尚未执行=%d；阶段=%s", summary.Recycled, summary.Skipped, summary.Failed, summary.Uncertain, summary.Ready+summary.Pending, summary.State))
 				_ = s.recordBackupSourceCleanup(summary)
 				report, _ := s.catalog.Report(job.SourceID)
 				if report != nil && summary.Recycled > 0 {
@@ -278,9 +293,16 @@ func (s *Media) ExecuteMediaDelete(parent context.Context, id string) error {
 				continue
 			}
 			running, e := s.cleanupQQ()
-			if e != nil || running {
-				return errors.New("QQ 已启动或进程无法核实，剩余文件未删除")
+			if e != nil {
+				diagnostics.Record(ctx, "warning", "cleanup.qq_unknown", "无法确认 QQ 进程状态，停止剩余操作")
+				return errors.New("无法确认 QQ 是否完全退出，剩余文件未回收；请检查后重试。")
 			}
+			if running {
+				diagnostics.Record(ctx, "warning", "cleanup.qq_running", "检测到 QQ 进程，停止剩余操作")
+				return errors.New("检测到 QQ 仍在运行，目前不区分账号，请完全退出后回收。剩余文件未回收。")
+			}
+			itemCtx := diagnostics.WithItem(ctx, id, row.Item.InstanceID)
+			diagnostics.Record(itemCtx, "info", "cleanup.validate", "开始执行前文件核对")
 			row.Item = media.Bind(row.Item, source)
 			if e = mediacleanup.Validate(row.Item, source); e != nil {
 				row.Status = "skipped"
@@ -290,7 +312,8 @@ func (s *Media) ExecuteMediaDelete(parent context.Context, id string) error {
 				if err = s.catalog.SaveCleanupItem(ctx, job, row); err != nil {
 					return err
 				}
-				e = s.recycleMedia(ctx, row.Item, row.SHA256)
+				diagnostics.Record(itemCtx, "info", "cleanup.processing_saved", "已保存处理中状态，准备调用 Windows")
+				e = s.recycleMedia(itemCtx, row.Item, row.SHA256)
 				if e == nil {
 					row.Status = "recycled"
 					row.Detail = "已移至 Windows 回收站"
@@ -304,8 +327,19 @@ func (s *Media) ExecuteMediaDelete(parent context.Context, id string) error {
 				}
 			}
 			if err = s.catalog.SaveCleanupItem(context.WithoutCancel(ctx), job, row); err != nil {
+				diagnostics.Record(itemCtx, "error", "cleanup.save_failed", "回收后的结果未能写入数据库，停止任务")
 				return err
 			}
+			level, result := "info", "已回收"
+			switch row.Status {
+			case "skipped":
+				level, result = "warning", "已跳过"
+			case "failed":
+				level, result = "error", "回收失败"
+			case "uncertain":
+				level, result = "error", "回收结果待核对"
+			}
+			diagnostics.Record(itemCtx, level, "cleanup.result_saved", "逐项结果已保存："+result)
 			if row.Status == "uncertain" {
 				return errors.New("Windows 未确认本项回收结果，已停止剩余操作；请查看任务和回收站")
 			}

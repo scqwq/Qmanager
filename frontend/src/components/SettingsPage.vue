@@ -1,16 +1,21 @@
 <script setup lang="ts">
 import FeedbackNotice from './FeedbackNotice.vue'
 import {errorFeedback} from '../feedback'
-import {computed,onMounted,onUnmounted,ref} from 'vue'
+import {computed,nextTick,onMounted,onUnmounted,ref} from 'vue'
 import {api,pathSettingsChanged,type PathSettings} from '../api'
 import HelpTip from './HelpTip.vue'
 import AppearanceSettings from './AppearanceSettings.vue'
+import LogsPage from './LogsPage.vue'
 
 const props=defineProps<{busy:boolean;recordsMessage?:string;recordsError?:string}>()
 const emit=defineEmits<{imported:[];exportRecords:[]}>()
 const saved=ref<PathSettings>({source_directory:'',backup_directory:''})
 const source=ref(''),backup=ref(''),error=ref(''),message=ref('')
 const loading=ref(true),saving=ref(false),choosing=ref(false),importing=ref(false),loaded=ref(false)
+const logsOpen=ref(false)
+let settingsScroll=0
+async function openLogs(){settingsScroll=window.scrollY;logsOpen.value=true;await nextTick();window.scrollTo(0,0)}
+async function closeLogs(){logsOpen.value=false;await nextTick();window.scrollTo(0,settingsScroll)}
 const pending=computed(()=>loading.value||saving.value||choosing.value||importing.value)
 const disabled=computed(()=>props.busy||pending.value||!loaded.value)
 const dirty=computed(()=>source.value.trim()!==saved.value.source_directory||backup.value.trim()!==saved.value.backup_directory)
@@ -39,6 +44,8 @@ onUnmounted(()=>{disposed=true;window.removeEventListener(pathSettingsChanged,re
 
 <template>
 <section class="settings-page">
+ <LogsPage v-if="logsOpen" @back="closeLogs"/>
+ <div v-show="!logsOpen">
  <AppearanceSettings/>
  <p class="settings-intro">默认目录</p>
  <p v-if="loading" role="status">正在读取设置…</p>
@@ -64,5 +71,10 @@ onUnmounted(()=>{disposed=true;window.removeEventListener(pathSettingsChanged,re
   <div class="records-actions"><button type="button" class="secondary" :disabled="disabled" @click="emit('exportRecords')">备份应用记录</button><HelpTip label="关于备份应用记录" text="导出 Qman 保存的媒体清单、观察历史和操作记录的数据和缓存，不包含图片、视频等原文件。目前仅支持导出，缓存指索引查询数据。"/></div>
   <FeedbackNotice v-if="recordsError" :feedback="errorFeedback(recordsError)"/><p v-if="recordsMessage" class="notice success" role="status">{{recordsMessage}}</p>
  </section>
+ <section class="settings-log-entry">
+  <div><h2>运行日志</h2><p>查看回收过程和崩溃记录，排查操作中断。</p></div>
+  <button type="button" class="secondary" @click="openLogs">查看日志</button>
+ </section>
+ </div>
 </section>
 </template>

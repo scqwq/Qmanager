@@ -9,7 +9,8 @@ export function errorFeedback(value:unknown):Feedback {
  if(/context canceled|已取消|用户取消/i.test(text)){title='操作已取消';advice='已经完成的部分可能保留，请查看本次操作结果。';tone='warning'}
  else if(/开始日期不能晚于结束日期/.test(text)){title='日期范围填写反了';advice='开始日期应早于或等于结束日期。'}
  else if(/当前任务.*(未结束|尚未结束)|当前任务尚未结束/.test(text)){title='上一项操作还在进行';advice='等它完成，或取消当前任务后再试。'}
- else if(/退出\s*QQ|QQ.*(运行|进程|退出)/.test(text)){title='请先确认 QQ 已退出';advice='手动退出 QQ 后重新检查；无法确认进程状态时，不会执行源文件操作。'}
+ else if(/检测到 QQ 仍在运行/.test(text)){title='检测到 QQ 仍在运行';advice='目前不区分账号，请完全退出后回收。'}
+ else if(/退出\s*QQ|QQ.*(运行|进程|退出)/.test(text)){title='请先确认 QQ 已退出';advice='手动完全退出 QQ 后重新检查；无法确认进程状态时，不会执行源文件操作。'}
  else if(/重叠|备份.*与.*分开|保存.*与.*分开/.test(text)){title='请换一个备份保存位置';advice='备份位置须与 QQ 数据目录、Qman 应用数据和已有来源分开。'}
  else if(/索引.*(容量|空间).*(不足|上限)|索引容量/.test(text)){title='应用记录空间不足';advice='先在设置中备份应用记录，再维护索引；不要直接删除数据库。'}
  else if(/空间不足|容量不足|not enough space|disk.*full/i.test(text)){title='保存位置的空间不足';advice='请选择空间足够的保存目录，再重新开始。'}

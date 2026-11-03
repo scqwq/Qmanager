@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"golang.org/x/sys/windows"
+	"qqarchive/internal/diagnostics"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -34,6 +37,10 @@ func recycleGUID(value string) windows.GUID {
 
 type shellObject struct{ vtable *[23]uintptr }
 
+// Pointer arguments must escape the caller's movable stack and stay live until
+// the synchronous COM call returns. The progress sink has its own pinned storage.
+//
+//go:uintptrescapes
 func (o *shellObject) call(slot int, args ...uintptr) uintptr {
 	params := append([]uintptr{uintptr(unsafe.Pointer(o))}, args...)
 	hr, _, _ := syscall.SyscallN(o.vtable[slot], params...)
@@ -49,14 +56,56 @@ func hrError(hr uintptr) error {
 
 const abortHRESULT = uintptr(0x80004004)
 
-type recycleSink struct {
-	vtable   *[19]uintptr
+type recycleState struct {
+	pin      runtime.Pinner
 	ctx      context.Context
 	check    func() error
 	checked  bool
 	recycled bool
 	failure  error
 	location string
+}
+
+// Windows retains this COM object between DeleteItem and PerformOperations.
+// Pin its pointer-free COM view, and keep all Go references in the registry.
+type recycleSink struct {
+	vtable uintptr
+	token  uintptr
+	refs   int32
+}
+
+var sinkRegistry = struct {
+	sync.RWMutex
+	next   uintptr
+	states map[uintptr]*recycleState
+}{states: make(map[uintptr]*recycleState)}
+
+func (s *recycleSink) state() *recycleState {
+	sinkRegistry.RLock()
+	defer sinkRegistry.RUnlock()
+	return sinkRegistry.states[s.token]
+}
+func (s *recycleSink) addRef() uintptr { return uintptr(atomic.AddInt32(&s.refs, 1)) }
+func (s *recycleSink) release() uintptr {
+	n := atomic.AddInt32(&s.refs, -1)
+	if n == 0 {
+		sinkRegistry.Lock()
+		state := sinkRegistry.states[s.token]
+		delete(sinkRegistry.states, s.token)
+		sinkRegistry.Unlock()
+		state.pin.Unpin()
+	}
+	return uintptr(n)
+}
+func newRecycleSink(state *recycleState) (*recycleSink, error) {
+	sinkRegistry.Lock()
+	sinkRegistry.next++
+	token := sinkRegistry.next
+	s := &recycleSink{vtable: uintptr(unsafe.Pointer(&recycleVtable)), token: token, refs: 1}
+	state.pin.Pin(s)
+	sinkRegistry.states[token] = state
+	sinkRegistry.Unlock()
+	return s, nil
 }
 
 // Static callbacks avoid allocating/leaking a new Windows callback per file.
@@ -70,11 +119,13 @@ var recycleVtable = [19]uintptr{
 			return uintptr(0x80004002)
 		}
 		*out = uintptr(unsafe.Pointer(s))
+		s.addRef()
 		return 0
 	}),
-	windows.NewCallback(func(s *recycleSink) uintptr { return 2 }),
-	windows.NewCallback(func(s *recycleSink) uintptr { return 1 }),
-	windows.NewCallback(func(s *recycleSink) uintptr {
+	windows.NewCallback(func(s *recycleSink) uintptr { return s.addRef() }),
+	windows.NewCallback(func(s *recycleSink) uintptr { return s.release() }),
+	windows.NewCallback(func(native *recycleSink) uintptr {
+		s := native.state()
 		if s.ctx.Err() != nil {
 			return abortHRESULT
 		}
@@ -87,7 +138,9 @@ var recycleVtable = [19]uintptr{
 	windows.NewCallback(func(s *recycleSink, flags, item, dest, name, hr, newItem uintptr) uintptr { return abortHRESULT }),
 	windows.NewCallback(func(s *recycleSink, flags, item, dest, name uintptr) uintptr { return abortHRESULT }),
 	windows.NewCallback(func(s *recycleSink, flags, item, dest, name, hr, newItem uintptr) uintptr { return abortHRESULT }),
-	windows.NewCallback(func(s *recycleSink, flags, item uintptr) uintptr {
+	windows.NewCallback(func(native *recycleSink, flags, item uintptr) uintptr {
+		s := native.state()
+		diagnostics.Record(s.ctx, "info", "recycle.pre_delete", "Windows 即将回收，开始最后核对")
 		if s.ctx.Err() != nil || s.checked {
 			return abortHRESULT
 		}
@@ -97,12 +150,15 @@ var recycleVtable = [19]uintptr{
 		}
 		s.failure = s.check()
 		if s.failure != nil {
+			diagnostics.Record(s.ctx, "warning", "recycle.check_refused", "最后核对未通过，拒绝回收")
 			return abortHRESULT
 		}
 		s.checked = true
 		return 0
 	}),
-	windows.NewCallback(func(s *recycleSink, flags, item, hr uintptr, newItem *shellObject) uintptr {
+	windows.NewCallback(func(native *recycleSink, flags, item, hr uintptr, newItem *shellObject) uintptr {
+		s := native.state()
+		diagnostics.Record(s.ctx, "info", "recycle.post_delete", fmt.Sprintf("Windows 逐项结果 0x%08X；回收站对象=%t", uint32(hr), newItem != nil))
 		if e := hrError(hr); e != nil {
 			s.failure = e
 			return abortHRESULT
@@ -123,7 +179,8 @@ var recycleVtable = [19]uintptr{
 	windows.NewCallback(func(s *recycleSink, flags, dest, name, template, attributes, hr, newItem uintptr) uintptr {
 		return abortHRESULT
 	}),
-	windows.NewCallback(func(s *recycleSink, total, done uintptr) uintptr {
+	windows.NewCallback(func(native *recycleSink, total, done uintptr) uintptr {
+		s := native.state()
 		if s.ctx.Err() != nil {
 			return abortHRESULT
 		}
@@ -163,8 +220,13 @@ func recycleNative(ctx context.Context, path string, check func() error) (string
 	if operation == nil {
 		return "", errors.New("无法创建 Windows 回收服务")
 	}
-	var sink *recycleSink
-	defer func() { operation.call(2); runtime.KeepAlive(sink) }()
+	var native *recycleSink
+	defer func() {
+		operation.call(2)
+		if native != nil {
+			native.release()
+		}
+	}()
 	const flags = 0x00080000 | 0x20000000 | 0x00100000 | 0x00800000 | 0x2000 | 0x1000 | 0x0400 | 0x0040 | 0x0010 | 0x0004 | 0x4000
 	if err := hrError(operation.call(5, flags)); err != nil {
 		return "", err
@@ -182,11 +244,17 @@ func recycleNative(ctx context.Context, path string, check func() error) (string
 		return "", errors.New("无法定位待回收文件")
 	}
 	defer item.call(2)
-	sink = &recycleSink{vtable: &recycleVtable, ctx: ctx, check: check}
-	if err = hrError(operation.call(18, uintptr(unsafe.Pointer(item)), uintptr(unsafe.Pointer(sink)))); err != nil {
+	sink := &recycleState{ctx: ctx, check: check}
+	native, err = newRecycleSink(sink)
+	if err != nil {
+		return "", err
+	}
+	diagnostics.Record(ctx, "info", "recycle.queued", "向 Windows 提交回收请求")
+	if err = hrError(operation.call(18, uintptr(unsafe.Pointer(item)), uintptr(unsafe.Pointer(native)))); err != nil {
 		return "", err
 	}
 	perform := hrError(operation.call(21))
+	diagnostics.Record(ctx, "info", "recycle.returned", fmt.Sprintf("Windows 回收调用返回；已确认=%t；调用失败=%t", sink.recycled, perform != nil))
 	var aborted int32
 	abortedErr := hrError(operation.call(22, uintptr(unsafe.Pointer(&aborted))))
 	runtime.KeepAlive(sink)

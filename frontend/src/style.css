@@ -415,3 +415,30 @@ main { margin-left: 224px; min-width: 0; }
 .appearance-opacity { display: flex; align-items: center; gap: 16px; max-width: 460px; }
 .appearance-opacity input[type="range"] { width: 100%; min-width: 0; min-height: 28px; margin: 0; accent-color: var(--accent); }
 .appearance-opacity output { min-width: 48px; text-align: right; font-variant-numeric: tabular-nums; }
+
+.settings-log-entry { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 36px; padding: 28px 0; border-top: 1px solid var(--line); }
+.settings-log-entry h2 { margin: 0; font-size: 20px; }
+.settings-log-entry p, .logs-intro, .logs-muted { font-size: 14px; color: var(--muted); line-height: 1.8; }
+.settings-log-entry p { margin: 10px 0 0; }
+.settings-log-entry > button { flex-shrink: 0; }
+.logs-back { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 24px; }
+.logs-back > span { font-size: 28px; line-height: 1; }
+.logs-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.logs-heading h2 { margin: 0; font-size: 20px; }
+.logs-section { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--line); }
+.logs-section h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.logs-filter { display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--muted); }
+.logs-filter select { font-size: 14px; }
+.log-crash { margin-top: 18px; font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
+.log-crash p { margin: 8px 0; }
+.log-crash pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: var(--surface); border: 1px solid var(--line); font-size: 14px; }
+.log-entries { list-style: none; margin: 20px 0 0; padding: 0; max-height: 65vh; overflow: auto; }
+.log-entries li { display: flex; gap: 24px; padding: 18px 0; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 1.8; }
+.log-entries time { flex: 0 0 170px; color: var(--muted); }
+.log-entry-copy { min-width: 0; overflow-wrap: anywhere; }
+.log-entry-copy p { margin: 0; }
+.log-entry-copy details { margin-top: 6px; color: var(--muted); }
+.log-warning .log-entry-copy > p { color: var(--warning); }
+.log-error .log-entry-copy > p { color: var(--danger); }
+.logs-help { margin-top: 28px; font-size: 14px; line-height: 1.8; }
+@media(max-width:700px) { .settings-log-entry, .logs-heading { align-items: flex-start; flex-wrap: wrap; } .log-entries li { flex-direction: column; gap: 6px; } .log-entries time { flex-basis: auto; } }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"qqarchive/internal/catalog"
+	"qqarchive/internal/diagnostics"
 	"qqarchive/internal/media"
 	"qqarchive/internal/mediabackup"
 	"qqarchive/internal/storage"
@@ -315,7 +316,17 @@ func (s *Media) backupJob(parent context.Context, phase string, fn func(context.
 	go func() {
 		defer cancel()
 		defer close(done)
+		taskName := map[string]string{"restoring": "加载备份", "verifying": "核对文件", "deleting": "删除本地备份包", "preparing_delete": "回收前核对", "recycling": "回收源文件"}[phase]
+		if taskName == "" {
+			taskName = "后台任务"
+		}
+		diagnostics.Record(ctx, "info", "task.start", taskName+"开始")
 		err := fn(ctx)
+		if err != nil {
+			diagnostics.Record(ctx, "error", "task.failed", taskName+"未完成；具体原因见操作结果")
+		} else {
+			diagnostics.Record(ctx, "info", "task.end", taskName+"已结束")
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.jobCancel = nil

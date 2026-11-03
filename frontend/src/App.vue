@@ -50,11 +50,13 @@ const thumb=(i:Item)=>`/media/thumbnail/${encodeURIComponent(i.id)}`
 const failPreview=(id:string)=>{failed.value=new Set([...failed.value,id])}
 const title=computed(()=>month.value?`${month.value==='__unknown__'?'月份未知':month.value} · ${kind.value?kindName(kind.value):'全部类型'}`:kind.value?kindName(kind.value):'全部类型')
 const years=computed(()=>[...new Set(buckets.value.filter(b=>!kind.value||b.kind===kind.value).map(b=>b.month.slice(0,4)).filter(y=>/^\d{4}$/.test(y)))].sort().reverse())
-const months=computed(()=>{const m=new Map<string,number>();for(const b of buckets.value){if(kind.value&&b.kind!==kind.value)continue;if(year.value&&!b.month.startsWith(year.value+'-'))continue;m.set(b.month,(m.get(b.month)??0)+b.files)}return [...m].sort(([a],[b])=>b.localeCompare(a))})
+const availableMonths=computed(()=>{const m=new Map<string,number>();for(const b of buckets.value){if(kind.value&&b.kind!==kind.value)continue;m.set(b.month,(m.get(b.month)??0)+b.files)}return [...m].sort(([a],[b])=>b.localeCompare(a))})
+const months=computed(()=>availableMonths.value.filter(([m])=>!year.value||m.startsWith(year.value+'-')))
 function filter():Filter{return {include_baseline:includeBaseline.value,kind:kind.value,month:month.value,month_from:year.value?year.value+'-01':'',month_to:year.value?year.value+'-12':'',role:role.value,status:status.value,min_bytes:Number(size.value)||0,max_bytes:0,offset:offset.value,limit:60,view:view.value,from:from.value,to:to.value}}
 async function load(){const id=++generation;const source=state.value.source?.id;querying.value=true;if(from.value&&to.value&&from.value>to.value){error.value='开始日期不能晚于结束日期';querying.value=false;return}error.value='';try{const [p,bs]=await Promise.all([api().GetPage(filter()),api().GetFilterBuckets(filter())]);if(id===generation&&!disposed&&source===state.value.source?.id){page.value=p;buckets.value=bs}}catch(e){error.value=String(e)}finally{if(id===generation)querying.value=false}}
 function selectYear(){month.value='';from.value='';to.value=''};
 function selectMonth(value:string){month.value=value;if(value&&value!=='__unknown__')year.value=value.slice(0,4);else if(value==='__unknown__')year.value='';if(view.value==='observed'){from.value='';to.value=''}}
+function selectSidebarMonth(value:string){if(!value)year.value='';selectMonth(value)}
 function queryDate(){year.value='';month.value='';offset.value=0;void load()}
 function resetFilters(){year.value='';kind.value='';month.value='';from.value='';to.value='';role.value='';status.value='';size.value='';offset.value=0;void load()}
 function showInitialImport(){includeBaseline.value=true;offset.value=0}
@@ -113,13 +115,13 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
   <template v-if="!settingsPage&&!historyPage">
    <div class="nav-label month-heading">{{view==='observed'?'发现月份':'来源月份'}}</div>
    <div class="month-list">
-    <button class="month-item" :class="{active:!month}" @click="selectMonth('')">全部月份</button>
-    <button v-for="[m,count] in months" :key="m" class="month-item" :class="{active:month===(m||'__unknown__')}" @click="selectMonth(m||'__unknown__')">{{m||'月份未知'}}<span>{{count}}</span></button>
-    <p v-if="!months.length" class="sidebar-hint">{{view==='observed'&&!includeBaseline?'首次导入记录默认不计新增。':'建立索引后可按月份查看。'}}</p>
+    <button class="month-item" :class="{active:!month&&!year}" @click="selectSidebarMonth('')">全部月份</button>
+    <button v-for="[m,count] in availableMonths" :key="m" class="month-item" :class="{active:month===(m||'__unknown__')}" @click="selectSidebarMonth(m||'__unknown__')">{{m||'月份未知'}}<span>{{count}}</span></button>
+    <p v-if="!availableMonths.length" class="sidebar-hint">{{view==='observed'&&!includeBaseline?'首次导入记录默认不计新增。':'建立索引后可按月份查看。'}}</p>
    </div>
   </template>
   <button class="nav-item settings-nav" :class="{active:settingsPage}" :disabled="!desktop" @click="settingsPage=true;historyPage=false">设置</button>
-  <div class="sidebar-footer">本机处理 <span>0.4.5-preview</span></div>
+  <div class="sidebar-footer">本机处理 <span>0.6.0</span></div>
  </aside>
  <main>
   <header class="topbar">

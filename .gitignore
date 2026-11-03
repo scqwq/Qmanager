@@ -3,6 +3,8 @@
 *.db-*
 *.sqlite
 *.sqlite3
+*.sqlite-*
+*.sqlite3-*
 *.qqarc
 *.partial
 *.log
@@ -18,6 +20,19 @@ build/bin/
 build/releases/
 *.syso
 frontend/wailsjs/
+
+# Other compiler outputs and local development caches (keep build/ source files).
+*.exe
+*.dll
+*.pdb
+*.test
+*.tsbuildinfo
+.cache/
+.vite/
+.vs/
+coverage/
+/dist/
+/out/
 
 # Third-party reference projects are local-only.
 /other_project/

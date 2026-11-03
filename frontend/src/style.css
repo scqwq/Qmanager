@@ -444,3 +444,6 @@ main { margin-left: 224px; min-width: 0; }
 .log-error .log-entry-copy > p { color: var(--danger); }
 .logs-help { margin-top: 28px; font-size: 14px; line-height: 1.8; }
 @media(max-width:700px) { .settings-log-entry, .logs-heading { align-items: flex-start; flex-wrap: wrap; } .log-entries li { flex-direction: column; gap: 6px; } .log-entries time { flex-basis: auto; } }
+
+.history-location { max-width: 100%; padding: 0; font: inherit; line-height: inherit; overflow-wrap: anywhere; white-space: normal; }
+.history-location:not(:disabled):hover { text-decoration: underline; }

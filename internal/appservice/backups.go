@@ -312,6 +312,8 @@ func (s *Media) backupJob(parent context.Context, phase string, fn func(context.
 	s.state.Scanned = 0
 	s.state.Bytes = 0
 	s.state.Restore = nil
+	s.state.CheckPass, s.state.CheckTotal = 0, 0
+	s.state.CheckStage, s.state.CheckWaiting = "", false
 	s.mu.Unlock()
 	go func() {
 		defer cancel()
@@ -331,6 +333,7 @@ func (s *Media) backupJob(parent context.Context, phase string, fn func(context.
 		defer s.mu.Unlock()
 		s.jobCancel = nil
 		s.state.Phase = "ready"
+		s.state.CheckStage, s.state.CheckWaiting = "", false
 		if err != nil {
 			s.state.Error = err.Error()
 		}

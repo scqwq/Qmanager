@@ -17,7 +17,7 @@ const time=(v?:string)=>v&&!v.startsWith('0001-')?new Date(v).toLocaleString():'
 <template>
  <section class="library-status" :class="status.tone" aria-label="更新与监控状态">
   <div class="status-main">
-   <div class="status-copy"><strong>{{status.title}}</strong><p v-if="status.description">{{status.description}}</p><p v-if="status.gap" class="coverage-reason">{{status.gap}}</p><p v-if="status.working" role="status">已处理 {{state.scanned.toLocaleString()}} 项<span v-if="state.phase==='preparing_backup'"> / {{state.check_total??0}} 项</span> · {{bytes(state.bytes)}}</p></div>
+   <div class="status-copy"><strong>{{status.title}}</strong><p v-if="status.description">{{status.description}}</p><p v-if="status.gap" class="coverage-reason">{{status.gap}}</p><p v-if="status.working" role="status">已处理 {{state.scanned.toLocaleString()}} 项<span v-if="['preparing_backup','preparing_delete'].includes(state.phase)"> / {{state.check_total??0}} 项</span><template v-if="!['preparing_backup','preparing_delete'].includes(state.phase)"> · {{bytes(state.bytes)}}</template></p></div>
    <div v-if="state.mode==='source'" class="status-actions">
     <button v-if="scanning||state.watching||state.background_stage" type="button" class="secondary" :disabled="busy||stopping||state.stopping" @click="$emit('stop')">{{stopping||state.stopping?'正在停止…':scanning?'终止更新':'暂停监控'}}</button>
     <button type="button" class="secondary" :disabled="busy||scanning" title="补充新文件并开始监控，不全面检查旧文件" @click="$emit('update','fast')">快速更新</button>

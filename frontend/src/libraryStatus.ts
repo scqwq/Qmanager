@@ -12,7 +12,14 @@ export function coverageExplanation(value:string){
 
 export function libraryStatus(state:State){
  const gap=state.needs_full?coverageExplanation(state.coverage)||'部分文件变化可能没有完整记录。':''
- const tasks:Record<string,string>={preparing_backup:`正在检查这次选中的备份文件（第 ${state.check_pass??1} 轮）`,backup:'正在复制并校验备份',verifying:'正在检查所选文件',discovering:'正在查找账号媒体目录',restoring:'正在加载并保存媒体',deleting:'正在处理所选备份包',preparing_delete:'正在检查待回收文件，尚未删除',recycling:'正在将确认的文件移入回收站'}
+ if(['preparing_backup','preparing_delete'].includes(state.phase)){
+  const deleting=state.phase==='preparing_delete'
+  const files=deleting?'待回收文件':'备份文件'
+  const title=state.check_stage==='stability'?`正在核对${files}是否停止变化（第 ${state.check_pass||1} 轮）`:state.check_stage==='hashing'?'正在核对待回收文件的内容，尚未删除':`正在准备本次所选${files}`
+  const description=state.check_waiting?'正在短暂等待，随后再次核对所选文件；可以取消任务。':deleting?'只检查本次所选文件，自动补足稳定性核对；完成后仍需确认才会回收。':'只检查本次所选文件，自动补足稳定性核对后再复制；变化或不可读的项目会说明原因。'
+  return {title,description,gap,tone:gap?'warning':'info',working:true}
+ }
+ const tasks:Record<string,string>={backup:'正在复制并校验备份',verifying:'正在检查所选文件',discovering:'正在查找账号媒体目录',restoring:'正在加载并保存媒体',deleting:'正在处理所选备份包',recycling:'正在将确认的文件移入回收站'}
  if(tasks[state.phase])return {title:tasks[state.phase],description:'',gap,tone:gap?'warning':'info',working:true}
  if(state.phase==='scanning')return {title:state.update_mode==='full'?'正在检查当前账号的全部受支持媒体':'正在补充新文件',description:'可以继续浏览已有清单；终止更新会保留已经保存的记录。',gap,tone:gap?'warning':'info',working:true}
  if(state.background_stage)return {title:state.background_stage==='stability'?'正在检查新发现或变化的文件':state.background_stage==='changes'?'正在检查发生变化的路径':'正在定期查找新文件',description:'这是后台检查，可以继续浏览和筛选。',gap,tone:gap?'warning':'info',working:false}

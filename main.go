@@ -268,7 +268,7 @@ func startDiagnostics(private string) {
 		if e = logger.EnableCrashOutput(); e != nil {
 			logger.Record(context.Background(), "warning", "crash.capture_unavailable", "Go 崩溃详情记录未能启用")
 		}
-		logger.Record(context.Background(), "info", "app.start", "Qman 0.6.3 / diagnostics-1 启动")
+		logger.Record(context.Background(), "info", "app.start", "Qman 0.6.4 / diagnostics-1 启动")
 	}
 }
 func main() {

@@ -15,6 +15,27 @@ import (
 )
 
 func Validate(item media.Item, source media.Source) error {
+	if err := ValidateSource(item, source); err != nil {
+		return err
+	}
+	if item.Role == "temporary" {
+		return errors.New("临时资源不参与回收，已跳过")
+	}
+	if item.Status != "recognized" {
+		return errors.New("文件格式不可识别或当前状态不可用，已跳过")
+	}
+	if item.Bytes <= 0 {
+		return errors.New("文件为空，已跳过")
+	}
+	if item.Stability != "stable_heuristic" {
+		return errors.New("所选文件尚未通过稳定性核对，已跳过")
+	}
+	return nil
+}
+
+// ValidateSource is required before on-demand observations as well as recycling.
+// It does not grant deletion eligibility to a pending file.
+func ValidateSource(item media.Item, source media.Source) error {
 	if item.Identity == "" || item.Root != source.Resolved || !filepath.IsLocal(item.Path) {
 		return errors.New("来源或文件身份无效")
 	}
@@ -30,9 +51,6 @@ func Validate(item media.Item, source media.Source) error {
 	}
 	if _, e := media.Canonical(filepath.Join(item.Root, item.Path)); e != nil {
 		return e
-	}
-	if item.Stability != "stable_heuristic" || item.Role == "temporary" || item.Status != "recognized" {
-		return errors.New("文件尚未稳定、为临时资源或不可识别，已跳过")
 	}
 	return nil
 }

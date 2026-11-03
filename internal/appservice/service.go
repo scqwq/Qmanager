@@ -25,6 +25,8 @@ import (
 type State struct {
 	CheckTotal       int                        `json:"check_total"`
 	CheckPass        int                        `json:"check_pass"`
+	CheckStage       string                     `json:"check_stage,omitempty"`
+	CheckWaiting     bool                       `json:"check_waiting"`
 	UpdateRunning    bool                       `json:"update_running"`
 	BackgroundStage  string                     `json:"background_stage,omitempty"`
 	Stopping         bool                       `json:"stopping"`
@@ -514,6 +516,7 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 	s.state.Backup = nil
 	s.state.ExcludedItems = nil
 	s.state.CheckPass, s.state.CheckTotal = 0, 0
+	s.state.CheckStage, s.state.CheckWaiting = "", false
 	s.state.Scanned = 0
 	s.state.Bytes = 0
 	s.mu.Unlock()
@@ -525,6 +528,7 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 		if err == nil {
 			s.mu.Lock()
 			s.state.Phase = "backup"
+			s.state.CheckStage, s.state.CheckWaiting = "", false
 			s.state.Scanned, s.state.Bytes = 0, 0
 			s.mu.Unlock()
 			result, err = mediabackup.Build(ctx, source, items, f, target, protected, s.catalog.History, func(n int, b int64) { s.mu.Lock(); s.state.Scanned = n; s.state.Bytes = b; s.mu.Unlock() }, options)
@@ -561,6 +565,7 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 		s.jobCancel = nil
 		s.state.Phase = "ready"
 		s.state.Revision++
+		s.state.CheckStage, s.state.CheckWaiting = "", false
 		if summaryErr == nil {
 			s.state.Report = summary
 		}

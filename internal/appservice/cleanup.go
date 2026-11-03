@@ -161,6 +161,31 @@ func (s *Media) prepareCleanup(ctx context.Context, source media.Source, f media
 			}
 		}
 	}()
+	blocked := make(map[string]string, len(skips))
+	for id, reason := range skips {
+		blocked[id] = reason
+	}
+	for _, item := range items {
+		if blocked[item.InstanceID] == "" {
+			if err := mediacleanup.ValidateSource(item, source); err != nil {
+				blocked[item.InstanceID] = err.Error()
+			}
+		}
+	}
+	skips, err = s.observeSelection(ctx, source, items, blocked)
+	if err != nil {
+		return err
+	}
+	if summary, e := s.catalog.Report(source.ID); e == nil {
+		s.mu.Lock()
+		s.state.Report = summary
+		s.mu.Unlock()
+	}
+	s.mu.Lock()
+	s.state.CheckStage, s.state.CheckWaiting = "hashing", false
+	s.state.CheckPass, s.state.CheckTotal, s.state.Scanned = 0, len(items), 0
+	s.state.Bytes = 0
+	s.mu.Unlock()
 	var bytes int64
 	for i, item := range items {
 		if err = ctx.Err(); err != nil {
@@ -169,7 +194,7 @@ func (s *Media) prepareCleanup(ctx context.Context, source media.Source, f media
 		row := catalog.CleanupItem{Item: item, Status: "ready"}
 		if reason := skips[item.InstanceID]; reason != "" {
 			row.Status = "skipped"
-			row.Detail = reason
+			row.Detail = selectionSkipMessage(reason)
 		} else if e := mediacleanup.Validate(item, source); e != nil {
 			row.Status = "skipped"
 			row.Detail = e.Error()

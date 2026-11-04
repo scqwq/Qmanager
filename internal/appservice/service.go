@@ -56,28 +56,31 @@ type State struct {
 	Discovery        *discovery.Result          `json:"discovery"`
 }
 type Media struct {
-	appearanceMu      sync.Mutex
-	appearanceDraft   *appearanceImage
-	discoveryInterval time.Duration
-	recycleMedia      func(context.Context, media.Item, string) error
-	cleanupQQ         func() (bool, error)
-	op                sync.Mutex
-	mu                sync.RWMutex
-	state             State
-	items             []media.Item
-	byID              map[string]media.Item
-	catalog           *catalog.Catalog
-	private           string
-	cancel            context.CancelFunc
-	done              chan struct{}
-	jobCancel         context.CancelFunc
-	jobDone           chan struct{}
-	previews          chan struct{}
-	streamWorkers     chan struct{}
-	archiveHistory    map[string][]catalog.History
-	server            *http.Server
-	url               string
-	token             string
+	searchMu                 sync.Mutex
+	directorySearch          *directorySearchJob
+	directorySearchCancelled map[string]time.Time
+	appearanceMu             sync.Mutex
+	appearanceDraft          *appearanceImage
+	discoveryInterval        time.Duration
+	recycleMedia             func(context.Context, media.Item, string) error
+	cleanupQQ                func() (bool, error)
+	op                       sync.Mutex
+	mu                       sync.RWMutex
+	state                    State
+	items                    []media.Item
+	byID                     map[string]media.Item
+	catalog                  *catalog.Catalog
+	private                  string
+	cancel                   context.CancelFunc
+	done                     chan struct{}
+	jobCancel                context.CancelFunc
+	jobDone                  chan struct{}
+	previews                 chan struct{}
+	streamWorkers            chan struct{}
+	archiveHistory           map[string][]catalog.History
+	server                   *http.Server
+	url                      string
+	token                    string
 }
 
 func NewMedia(c *catalog.Catalog, private string) (*Media, error) {
@@ -673,6 +676,7 @@ func (s *Media) ExportIndex(ctx context.Context, target string) (string, error) 
 	return s.catalog.Export(ctx, target)
 }
 func (s *Media) Close() {
+	s.CancelQQDirectorySearch("")
 	s.op.Lock()
 	defer s.op.Unlock()
 	s.stopLocked()

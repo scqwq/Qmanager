@@ -13,14 +13,16 @@ const saved=ref<PathSettings>({source_directory:'',backup_directory:''})
 const source=ref(''),backup=ref(''),error=ref(''),message=ref('')
 const loading=ref(true),saving=ref(false),choosing=ref(false),importing=ref(false),loaded=ref(false)
 const logsOpen=ref(false)
+const searching=ref(false),cancellingSearch=ref(false),searchHint=ref(''),searchDetail=ref(''),searchCandidates=ref<string[]>([])
+let searchID='',searchTimer:ReturnType<typeof setTimeout>|undefined
 let settingsScroll=0
 async function openLogs(){settingsScroll=window.scrollY;logsOpen.value=true;await nextTick();window.scrollTo(0,0)}
 async function closeLogs(){logsOpen.value=false;await nextTick();window.scrollTo(0,settingsScroll)}
-const pending=computed(()=>loading.value||saving.value||choosing.value||importing.value)
+const pending=computed(()=>loading.value||saving.value||choosing.value||importing.value||searching.value)
 const disabled=computed(()=>props.busy||pending.value||!loaded.value)
 const dirty=computed(()=>source.value.trim()!==saved.value.source_directory||backup.value.trim()!==saved.value.backup_directory)
 let disposed=false
-function reset(){source.value=saved.value.source_directory;backup.value=saved.value.backup_directory;error.value='';message.value=''}
+function reset(){source.value=saved.value.source_directory;backup.value=saved.value.backup_directory;error.value='';message.value='';searchHint.value='';searchCandidates.value=[]}
 async function load(){loading.value=true;error.value='';try{const value=await api().GetSettings();if(!disposed){saved.value=value;reset();loaded.value=true}}catch(e){if(!disposed)error.value=String(e)}finally{loading.value=false}}
 async function choose(kind:'source'|'backup'){
  choosing.value=true;error.value='';message.value=''
@@ -37,9 +39,34 @@ async function importSource(){
  try{await api().ImportDefaultSource();if(!disposed)emit('imported')}
  catch(e){if(!disposed)error.value=String(e)}finally{importing.value=false}
 }
+function finishSearch(id:string){if(searchID!==id)return;searchID='';searching.value=false;cancellingSearch.value=false;if(searchTimer)clearTimeout(searchTimer);searchTimer=undefined}
+async function searchSource(){
+ if(searching.value){
+  const id=searchID;cancellingSearch.value=true
+  try{await api().CancelQQDirectorySearch(id);if(!disposed&&searchID===id){searchHint.value='搜索已取消。';finishSearch(id)}}
+  catch{if(!disposed&&searchID===id){cancellingSearch.value=false;searchHint.value='取消未完成，请重试。'}}
+  return
+ }
+ if(disabled.value)return
+ const id=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)
+ searchID=id;searching.value=true;searchHint.value='';searchDetail.value='';searchCandidates.value=[];message.value=''
+ searchTimer=setTimeout(()=>{if(!disposed&&searchID===id){searchHint.value='搜索已超时，请选择文件夹。';finishSearch(id);void api().CancelQQDirectorySearch(id).catch(()=>{})}},30000)
+ try{
+  const result=await api().SearchQQDirectory(id,source.value.trim(),backup.value.trim())
+  if(disposed||searchID!==id||cancellingSearch.value)return
+  if(result.status==='found'&&result.candidates.length){
+   searchCandidates.value=result.candidates
+   if(result.candidates.length===1){source.value=result.candidates[0];if(!result.complete)searchHint.value='已填入找到的位置，部分目录未检查。'}
+   else{searchHint.value=`找到 ${result.candidates.length} 个位置，可在目录框选择。`;finishSearch(id);await nextTick();if(disposed)return;const input=document.getElementById('default-source') as HTMLInputElement|null;input?.focus();input?.select()}
+  }else if(result.status==='cancelled')searchHint.value='搜索已取消。'
+  else if(result.status==='timeout')searchHint.value='搜索已超时，请选择文件夹。'
+  else searchHint.value=result.complete?'未找到，请选择文件夹。':'部分目录未检查，请选择文件夹。'
+ }catch(e){if(!disposed&&searchID===id){searchDetail.value=String(e);searchHint.value=searchDetail.value.includes('仍在停止')?'上次搜索仍在停止，请稍后重试。':searchDetail.value.includes('当前任务')?'请等待当前任务结束后搜索。':'搜索未完成，请稍后重试或选择文件夹。'}}
+ finally{if(!cancellingSearch.value)finishSearch(id)}
+}
 function refreshSyncedSettings(){if(!dirty.value&&!pending.value)void load()}
 onMounted(()=>{void load();window.addEventListener(pathSettingsChanged,refreshSyncedSettings)})
-onUnmounted(()=>{disposed=true;window.removeEventListener(pathSettingsChanged,refreshSyncedSettings)})
+onUnmounted(()=>{disposed=true;const id=searchID;finishSearch(id);if(id)void api().CancelQQDirectorySearch(id).catch(()=>{});window.removeEventListener(pathSettingsChanged,refreshSyncedSettings)})
 </script>
 
 <template>
@@ -55,9 +82,9 @@ onUnmounted(()=>{disposed=true;window.removeEventListener(pathSettingsChanged,re
   <section class="settings-field">
    <label for="default-source">默认 QQ 数据文件夹</label>
    <p id="source-help">用于导入媒体和填入备份恢复目标。支持 Tencent Files、账号目录或 nt_data。</p>
-   <div class="settings-path"><input id="default-source" v-model="source" @input="message=''" :disabled="disabled" placeholder="未设置，导入时手动选择" aria-describedby="source-help" spellcheck="false"/><button type="button" class="secondary" :disabled="disabled" @click="choose('source')">选择文件夹</button><button type="button" class="text-button" :disabled="disabled||!source" @click="source='';message=''">清除</button></div>
+   <div class="settings-path"><input id="default-source" v-model="source" :list="searchCandidates.length?'qq-search-candidates':undefined" @input="message='';searchHint=''" :disabled="disabled" placeholder="未设置，导入时手动选择" aria-describedby="source-help" spellcheck="false"/><datalist id="qq-search-candidates"><option v-for="path in searchCandidates" :key="path" :value="path"/></datalist><button type="button" class="secondary" :disabled="disabled" @click="choose('source')">选择文件夹</button><button type="button" class="text-button" :disabled="disabled||!source" @click="source='';message='';searchHint=''">清除</button></div>
 
-   <button type="button" class="secondary" :disabled="disabled||dirty||!saved.source_directory" @click="importSource">{{importing?'正在导入…':'导入默认目录'}}</button><small v-if="dirty">请先保存修改，再导入。</small><details class="settings-help"><summary>目录如何使用？</summary><p>导入默认目录只识别账号，更新需手动开始。未设置时，首次导入或选择恢复目标会填入此设置，已有默认值不被临时选择覆盖。</p></details>
+   <div class="settings-import-actions"><button type="button" class="secondary" :disabled="disabled||dirty||!saved.source_directory" @click="importSource">{{importing?'正在导入…':'导入默认目录'}}</button><button type="button" class="secondary" :disabled="searching?cancellingSearch:disabled" @click="searchSource">{{searching?'取消搜索':'搜索 QQ 目录'}}</button><small v-if="searchHint" class="directory-search-hint" :title="searchDetail||undefined" role="status" aria-live="polite">{{searchHint}}</small></div><small v-if="dirty">请先保存修改，再导入。</small><details class="settings-help"><summary>目录如何使用？</summary><p>导入默认目录只识别账号，更新需手动开始。未设置时，首次导入或选择恢复目标会填入此设置，已有默认值不被临时选择覆盖。</p></details>
   </section>
   <section class="settings-field">
    <label for="default-backup">默认备份保存目录</label>

@@ -131,7 +131,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
    </div>
   </template>
   <button class="nav-item settings-nav" :class="{active:settingsPage}" :disabled="!desktop" @click="settingsPage=true;historyPage=false">设置</button>
-  <div class="sidebar-footer">本机处理 <span>0.6.7</span></div>
+  <div class="sidebar-footer">本机处理 <span>0.7.1</span></div>
  </aside>
  <main>
   <header class="topbar">

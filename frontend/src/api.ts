@@ -30,3 +30,18 @@ interface Bridge {SearchQQDirectory(id:string,hint:string,backupHint:string):Pro
 declare global {interface Window {go?:{main:{App:Bridge}}}}
 export const hasDesktop=()=>Boolean(window.go?.main?.App)
 export function api():Bridge {if(!window.go?.main?.App)throw new Error('请使用 Qman 桌面程序打开。');return window.go.main.App}
+
+export interface CloudUpload {id:string;phase:string;name:string;total:number;done:number;detail:string;remote_id:string}
+export interface CloudStatus {logged_in:boolean;account:string;needs_check:boolean;remembered:boolean;note:string;upload:CloudUpload}
+export interface CloudFolder {id:string;name:string}
+export interface CloudFolderPage {folders:CloudFolder[];next:string;more:boolean}
+export interface CloudQR {id:string;image:string;expires_at:string}
+export interface CloudLocalFile {ticket:string;name:string;bytes:number}
+interface CloudBridge {
+ GetCloudStatus():Promise<CloudStatus>;RefreshCloudLogin():Promise<CloudStatus>;GetCloudQRCode():Promise<CloudQR>;
+ PollCloudQRCode(id:string):Promise<{state:string;status:CloudStatus}>;CancelCloudQRCode():Promise<void>;
+ LoginCloudPassword(account:string,password:string):Promise<void>;LogoutCloud():Promise<void>;
+ ListCloudFolders(parent:string,next:string):Promise<CloudFolderPage>;CreateCloudFolder(parent:string,name:string):Promise<CloudFolder>;
+ ChooseCloudFile():Promise<CloudLocalFile>;StartCloudUpload(parent:string,ticket:string):Promise<void>;CancelCloudUpload():Promise<void>;
+}
+interface Bridge extends CloudBridge {}

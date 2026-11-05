@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"qqarchive/internal/appservice"
 	"qqarchive/internal/catalog"
+	"qqarchive/internal/cloud123"
 	"qqarchive/internal/diagnostics"
 	"qqarchive/internal/media"
 	"qqarchive/internal/mediabackup"
@@ -31,6 +32,7 @@ type App struct {
 	ctx     context.Context
 	media   *appservice.Media
 	private string
+	cloud   *cloud123.Service
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -73,7 +75,12 @@ func (a *App) UIReady() {
 		}
 	}
 }
-func (a *App) shutdown(context.Context) { a.media.Close() }
+func (a *App) shutdown(context.Context) {
+	if a.cloud != nil {
+		a.cloud.Close()
+	}
+	a.media.Close()
+}
 func (a *App) ChooseSource() (string, error) {
 	settings, err := a.media.Settings()
 	if err != nil {
@@ -279,7 +286,7 @@ func startDiagnostics(private string) {
 		if e = logger.EnableCrashOutput(); e != nil {
 			logger.Record(context.Background(), "warning", "crash.capture_unavailable", "Go 崩溃详情记录未能启用")
 		}
-		logger.Record(context.Background(), "info", "app.start", "Qman 0.6.7 / diagnostics-1 启动")
+		logger.Record(context.Background(), "info", "app.start", "Qman 0.7.1 / diagnostics-1 启动")
 	}
 }
 func main() {
@@ -289,6 +296,9 @@ func main() {
 		}
 	}()
 	private := os.Getenv("QMAN_DATA_DIR")
+	if private == "" && cloudResearchLog != "" && cloudResearchDataDir != "" {
+		private = cloudResearchDataDir
+	}
 	if private == "" {
 		private = filepath.Join(os.Getenv("LOCALAPPDATA"), "Qman")
 	}
@@ -308,9 +318,15 @@ func main() {
 		c.Close()
 		log.Fatal("无法启动本地媒体服务：", err)
 	}
-	a := &App{media: service, private: private}
+	cloud, err := cloud123.New(private, cloudResearchLog)
+	if err != nil {
+		service.Close()
+		log.Fatal("无法启动云盘测试服务：", err)
+	}
+	a := &App{media: service, private: private, cloud: cloud}
 	instanceID := "3b82bd1a-7e2d-4ced-9a9c-e02a16328016"
-	if os.Getenv("QMAN_SMOKE_SOURCE") != "" || os.Getenv("QMAN_SMOKE_CACHE_ONLY") == "1" {
+	cloudTestProfile := cloudResearchLog != "" && cloudResearchDataDir != "" && strings.EqualFold(filepath.Clean(private), filepath.Clean(cloudResearchDataDir))
+	if os.Getenv("QMAN_SMOKE_SOURCE") != "" || os.Getenv("QMAN_SMOKE_CACHE_ONLY") == "1" || cloudTestProfile {
 		sum := sha256.Sum256([]byte(private))
 		instanceID = fmt.Sprintf("qman-smoke-%x", sum[:12])
 	}
@@ -319,6 +335,10 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 247, G: 248, B: 250, A: 255},
 		AssetServer: &assetserver.Options{Assets: assets, Middleware: func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/cloud-qr/") {
+					a.cloud.ServeQR(w, r)
+					return
+				}
 				if strings.HasPrefix(r.URL.Path, "/appearance/") {
 					a.media.ServeAppearance(w, r)
 					return

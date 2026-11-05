@@ -445,6 +445,47 @@ main { margin-left: 224px; min-width: 0; }
 .logs-help { margin-top: 28px; font-size: 14px; line-height: 1.8; }
 @media(max-width:700px) { .settings-log-entry, .logs-heading { align-items: flex-start; flex-wrap: wrap; } .log-entries li { flex-direction: column; gap: 6px; } .log-entries time { flex-basis: auto; } }
 
+.cloud-page { max-width: 900px; }
+.cloud-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+.cloud-heading h2 { margin: 0; font-size: 20px; }
+.cloud-heading h3 { margin: 0; font-size: 16px; }
+.cloud-login-tabs { display: flex; gap: 12px; flex-wrap: wrap; margin: 28px 0; }
+.cloud-login-tabs .selected { color: var(--accent); border-color: var(--accent); background: var(--surface); font-weight: 600; }
+.cloud-qr { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding: 4px 0 20px; }
+.cloud-qr img { display: block; width: 232px; height: 232px; background: white; border-radius: 6px; }
+.cloud-qr p { margin: 0; font-size: 16px; }
+.cloud-qr-empty { width: 232px; min-height: 232px; display: grid; place-items: center; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+.cloud-login-form { display: grid; gap: 12px; width: 100%; max-width: 440px; padding: 4px 0 24px; }
+.cloud-login-form > label:not(:first-child) { margin-top: 12px; }
+.cloud-login-form input { width: 100%; min-width: 0; }
+.cloud-login-form > div:last-child { margin-top: 12px; }
+.cloud-account { margin: 0 0 28px; }
+.cloud-target { display: flex; gap: 20px; align-items: center; justify-content: space-between; padding: 20px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.cloud-target-path { overflow-wrap: anywhere; min-width: 0; }
+.cloud-target > button { flex-shrink: 0; }
+.cloud-actions { display: flex; gap: 12px; flex-wrap: wrap; margin: 24px 0; }
+.cloud-file-choice { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 20px 0; border-top: 1px solid var(--line); }
+.cloud-file-choice > div { flex: 1; min-width: 160px; overflow-wrap: anywhere; }
+.cloud-file-choice strong { font-weight: 500; }
+.cloud-file-choice span { display: block; color: var(--muted); font-size: 14px; margin-top: 8px; }
+.cloud-upload { border-top: 1px solid var(--line); padding-top: 24px; margin-top: 24px; }
+.cloud-upload-name { overflow-wrap: anywhere; }
+.cloud-upload progress { width: 100%; height: 12px; accent-color: var(--accent); }
+.cloud-muted { color: var(--muted); font-size: 14px; line-height: 1.8; }
+.cloud-folder-dialog { width: 100%; max-width: 600px; max-height: 86vh; padding: 28px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.cloud-folder-dialog h2 { margin: 0 0 24px; font-size: 20px; }
+.cloud-breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 18px; overflow-wrap: anywhere; }
+.cloud-breadcrumb > button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.cloud-breadcrumb > [aria-current] { max-width: 100%; overflow-wrap: anywhere; }
+.cloud-folder-list { border-top: 1px solid var(--line); }
+.cloud-folder-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 0; color: var(--text); background: transparent; text-align: left; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+.cloud-folder-row > span:first-child { overflow-wrap: anywhere; min-width: 0; }
+.cloud-folder-row:hover { background: var(--hover); }
+.cloud-folder-page { margin-top: 16px; }
+.cloud-name-dialog > label { display: block; margin-bottom: 12px; }
+.cloud-name-dialog > input { width: 100%; }
+@media(max-width:700px) { .cloud-target, .cloud-heading { align-items: flex-start; flex-wrap: wrap; } .cloud-folder-dialog { padding: 20px; max-height: 92vh; } .cloud-login-tabs { gap: 8px; } }
+
 .history-location { max-width: 100%; padding: 0; font: inherit; line-height: inherit; overflow-wrap: anywhere; white-space: normal; }
 .history-location:not(:disabled):hover { text-decoration: underline; }
 

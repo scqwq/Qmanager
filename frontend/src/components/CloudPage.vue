@@ -4,6 +4,7 @@ import {api,type CloudFolder,type CloudLocalFile,type CloudQR,type CloudStatus} 
 import FeedbackNotice from './FeedbackNotice.vue'
 import {cloudErrorFeedback as errorFeedback} from '../cloudFeedback'
 import CloudFolderPicker from './CloudFolderPicker.vue'
+defineProps<{backupUploadHint?:boolean}>()
 const emit=defineEmits<{back:[]}>()
 const status=ref<CloudStatus>({logged_in:false,account:'',needs_check:false,remembered:false,note:'',upload:{id:'',phase:'',name:'',total:0,done:0,detail:'',remote_id:''}})
 const loginModes = [{id:'qr',name:'扫码'},{id:'password',name:'账号密码'}] as const
@@ -44,6 +45,7 @@ onUnmounted(()=>{disposed=true;modeGeneration++;stopQR();if(statusTimer)clearTim
  <div :inert="picker||folderForm">
  <button type="button" class="text-button logs-back" @click="emit('back')"><span aria-hidden="true">‹</span> 返回设置</button>
  <div class="cloud-heading"><h2 id="cloud-title">云盘登录</h2><button v-if="status.logged_in" type="button" class="text-button" :disabled="working||uploading" @click="logout">退出登录</button></div>
+ <p v-if="backupUploadHint" class="notice" role="status">{{status.logged_in?'返回备份历史即可上传。':'登录后请返回备份历史上传。'}}</p>
  <FeedbackNotice v-if="error&&!folderForm" :feedback="errorFeedback(error)"/>
  <p v-if="status.note" class="notice" role="status">{{status.note}}</p>
  <p v-if="message" class="notice success" role="status">{{message}}</p>

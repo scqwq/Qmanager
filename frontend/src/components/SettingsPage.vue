@@ -8,20 +8,21 @@ import AppearanceSettings from './AppearanceSettings.vue'
 import LogsPage from './LogsPage.vue'
 import CloudPage from './CloudPage.vue'
 
-const props=defineProps<{busy:boolean;recordsMessage?:string;recordsError?:string}>()
+const props=defineProps<{busy:boolean;recordsMessage?:string;recordsError?:string;cloudLoginFromBackup?:boolean}>()
 const emit=defineEmits<{imported:[];exportRecords:[]}>()
 const saved=ref<PathSettings>({source_directory:'',backup_directory:''})
 const source=ref(''),backup=ref(''),error=ref(''),message=ref('')
 const loading=ref(true),saving=ref(false),choosing=ref(false),importing=ref(false),loaded=ref(false)
 const logsOpen=ref(false)
-const cloudOpen=ref(false)
+const cloudOpen=ref(!!props.cloudLoginFromBackup)
+const backupUploadHint=ref(!!props.cloudLoginFromBackup)
 const searching=ref(false),cancellingSearch=ref(false),searchHint=ref(''),searchDetail=ref(''),searchCandidates=ref<string[]>([])
 let searchID='',searchTimer:ReturnType<typeof setTimeout>|undefined
 let settingsScroll=0
 async function openLogs(){settingsScroll=window.scrollY;logsOpen.value=true;await nextTick();window.scrollTo(0,0)}
 async function closeLogs(){logsOpen.value=false;await nextTick();window.scrollTo(0,settingsScroll)}
 async function openCloud(){settingsScroll=window.scrollY;cloudOpen.value=true;await nextTick();window.scrollTo(0,0)}
-async function closeCloud(){cloudOpen.value=false;await nextTick();window.scrollTo(0,settingsScroll)}
+async function closeCloud(){cloudOpen.value=false;backupUploadHint.value=false;await nextTick();window.scrollTo(0,settingsScroll)}
 const pending=computed(()=>loading.value||saving.value||choosing.value||importing.value||searching.value)
 const disabled=computed(()=>props.busy||pending.value||!loaded.value)
 const dirty=computed(()=>source.value.trim()!==saved.value.source_directory||backup.value.trim()!==saved.value.backup_directory)
@@ -76,7 +77,7 @@ onUnmounted(()=>{disposed=true;const id=searchID;finishSearch(id);if(id)void api
 <template>
 <section class="settings-page">
  <LogsPage v-if="logsOpen" @back="closeLogs"/>
- <CloudPage v-if="cloudOpen" @back="closeCloud"/>
+ <CloudPage v-if="cloudOpen" :backup-upload-hint="backupUploadHint" @back="closeCloud"/>
  <div v-show="!logsOpen&&!cloudOpen">
  <AppearanceSettings/>
  <p class="settings-intro">默认目录</p>

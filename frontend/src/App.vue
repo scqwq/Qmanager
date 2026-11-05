@@ -19,6 +19,7 @@ const historyPage=ref(false),exportFilter=ref<Filter|null>(null),loadPreview=ref
 const historyLogID=ref('')
 let historyScroll=0
 const settingsPage=ref(false)
+const cloudLoginFromBackup=ref(false)
 const state=ref<State>({phase:'idle',mode:'source',source:null,sources:[],scanned:0,bytes:0,report:null,watching:false,coverage:'',revision:0,error:'',message:'',backup:null,excluded:0,cached:false,last_full_scan:'',reconcile_seconds:120,index_bytes:0})
 const page=ref<Page>({items:[],total:0,bytes:0,baseline_files:0}),buckets=ref<Bucket[]>([])
 const visibleFiles=computed(()=>buckets.value.reduce((count,b)=>count+b.files,0))
@@ -95,6 +96,13 @@ async function closeBackupOperations(){
  await nextTick()
  window.scrollTo(0,historyScroll)
 }
+async function openBackupCloudLogin(){
+ cloudLoginFromBackup.value=true
+ settingsPage.value=true
+ historyPage.value=false
+ await nextTick()
+ window.scrollTo(0,0)
+}
 const importedDefault=()=>run(async()=>{settingsPage.value=false;historyPage.value=false;year.value='';month.value='';offset.value=0;failed.value=new Set();selected.value=null})
 async function confirmLoad(id:string,target:string){
  const ticket=loadPreview.value?.ticket
@@ -124,6 +132,7 @@ watch([()=>state.value.revision,pendingBackupLoad],()=>{
  if(!state.value.error&&state.value.mode==='backup'&&currentPage.value===pending.page)enterBackupView()
 })
 watch(historyPage,value=>{if(!value)historyLogID.value=''})
+watch(settingsPage,value=>{if(!value)cloudLoginFromBackup.value=false})
 watch([year,kind,month,role,status,size,view,from,to,includeBaseline],()=>{offset.value=0;if(desktop.value)void load()})
 watch(view,()=>{year.value='';month.value='';from.value='';to.value=''})
 watch([from,to],()=>{if(view.value==='observed'&&(from.value||to.value)){month.value='';year.value=''}})
@@ -164,7 +173,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
    </div>
   </template>
   <button class="nav-item settings-nav" :class="{active:settingsPage}" :disabled="!desktop" @click="settingsPage=true;historyPage=false">设置</button>
-  <div class="sidebar-footer">本机处理 <span>0.8.0</span></div>
+  <div class="sidebar-footer">本机处理 <span>0.8.1</span></div>
  </aside>
  <main>
   <header class="topbar">
@@ -173,10 +182,10 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
   </header>
   <div class="workspace">
    <FeedbackNotice v-for="item in feedback.visible.value" :key="item.entry.id" :feedback="item.entry" dismissible @dismiss="feedback.dismiss(item.kind)"/>
-   <SettingsPage v-if="settingsPage" :busy="busy" :records-message="recordsMessage" :records-error="recordsError" @imported="importedDefault" @export-records="exportIndex"/>
+   <SettingsPage v-if="settingsPage" :busy="busy" :records-message="recordsMessage" :records-error="recordsError" :cloud-login-from-backup="cloudLoginFromBackup" @imported="importedDefault" @export-records="exportIndex"/>
    <div v-else-if="historyPage">
     <div v-if="busy" class="scan-progress" role="status">{{progressTitle}} · 已处理 {{state.scanned}} 项<button v-if="scanning" :disabled="stopping||state.stopping" @click="terminateUpdate">{{stopping||state.stopping?'正在终止…':'终止更新'}}</button><button v-else @click="cancel">取消任务</button></div>
-    <BackupHistory v-show="!historyLogID" :busy="busy" @load="loadHistory" @relocate="openBackup" @view="viewLoaded" @remove="removeBackups" @forget="forgetBackup" @operations="openBackupOperations" @clean="manager.prepareBackups" @clean-results="manager.results"/>
+    <BackupHistory v-show="!historyLogID" :busy="busy" @load="loadHistory" @relocate="openBackup" @view="viewLoaded" @remove="removeBackups" @forget="forgetBackup" @operations="openBackupOperations" @clean="manager.prepareBackups" @clean-results="manager.results" @cloud-login="openBackupCloudLogin"/>
     <LogsPage v-if="historyLogID" :backup-id="historyLogID" @back="closeBackupOperations"/>
    </div>
    <template v-else>

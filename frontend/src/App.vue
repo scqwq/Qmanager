@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed,nextTick,onMounted,onUnmounted,reactive,ref,watch} from 'vue'
-import {api,hasDesktop,type Item,type Page,type State,type Bucket,type BackupPreview,type History,type Filter} from './api'
+import {api,hasDesktop,type Item,type Page,type State,type Bucket,type BackupPreview,type History,type Filter,type CleanupRequest} from './api'
 import BackupHistory from './components/BackupHistory.vue'
 import LogsPage from './components/LogsPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
@@ -30,7 +30,7 @@ const includeBaseline=ref(false),querying=ref(false)
 const error=ref(''),action=ref(false),desktop=ref(hasDesktop()),listing=ref(false),selected=ref<Item|null>(null)
 const mediaURL=ref(''),playError=ref(false),history=ref<History[]>([]),failed=ref(new Set<string>())
 let timer:ReturnType<typeof setInterval>|undefined,polling=false,generation=0,disposed=false
-const busy=computed(()=>action.value||['preparing_backup','backup','verifying','discovering','restoring','deleting','preparing_delete','recycling'].includes(state.value.phase))
+const busy=computed(()=>action.value||['exporting','preparing_backup','backup','verifying','discovering','restoring','deleting','preparing_delete','recycling'].includes(state.value.phase))
 const scanning=computed(()=>state.value.phase==='scanning')
 const currentPage=computed<FeedbackPage>(()=>settingsPage.value?'settings':historyPage.value?'history':'media')
 const pendingBackupLoad=ref<{page:FeedbackPage;revision:number}|null>(null)
@@ -116,8 +116,17 @@ async function confirmLoad(id:string,target:string){
 }
 const switchSource=(event:Event)=>{const id=(event.target as HTMLSelectElement).value;if(id)void run(async()=>{await api().SwitchSource(id);settingsPage.value=false;historyPage.value=false;year.value='';failed.value=new Set();selected.value=null;month.value='';offset.value=0})}
 const backupError=ref(''),backupSubmitting=ref(false)
-function prepareBackup(){backupError.value='';exportFilter.value={...filter(),offset:0}}
-async function backup(f:Filter,format:string,path:string){feedback.begin();backupSubmitting.value=true;action.value=true;backupError.value='';try{await api().CreateBackupAt(f,format,path);exportFilter.value=null;state.value=await api().GetState();await load()}catch(e){backupError.value=String(e)}finally{backupSubmitting.value=false;action.value=false;feedback.accepted()}}
+const backupSelection=ref<CleanupRequest|null>(null)
+function prepareBackup(useSelection=false){
+ backupError.value=''
+ backupSelection.value=useSelection?manager.selection():null
+ exportFilter.value={...filter(),offset:0}
+}
+function exportSelected(){
+ const request=manager.selection()
+ return run(()=>api().ExportSelectedMedia(request))
+}
+async function backup(f:Filter,format:string,path:string){feedback.begin();backupSubmitting.value=true;action.value=true;backupError.value='';try{if(backupSelection.value)await api().CreateSelectedBackup(backupSelection.value,format,path);else await api().CreateBackupAt(f,format,path);exportFilter.value=null;state.value=await api().GetState();await load()}catch(e){backupError.value=String(e)}finally{backupSubmitting.value=false;action.value=false;feedback.accepted()}}
 const recordsMessage=ref(''),recordsError=ref('')
 async function exportIndex(){action.value=true;recordsMessage.value='';recordsError.value='';try{const path=await api().ExportIndex();if(path)recordsMessage.value=`应用记录已备份：${path}`}catch(e){recordsError.value=String(e)}finally{action.value=false}}
 async function rename(name:string){await run(()=>api().RenameSource(name))}
@@ -173,7 +182,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
    </div>
   </template>
   <button class="nav-item settings-nav" :class="{active:settingsPage}" :disabled="!desktop" @click="settingsPage=true;historyPage=false">设置</button>
-  <div class="sidebar-footer">本机处理 <span>0.8.1</span></div>
+  <div class="sidebar-footer">本机处理 <span>0.9.0</span></div>
  </aside>
  <main>
   <header class="topbar">
@@ -199,11 +208,14 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
      <LibraryStatus :state="state" :busy="busy" :stopping="stopping" @update="start" @stop="terminateUpdate" @cancel="cancel"/>
      <template v-if="state.report">
       <section class="library-panel">
-       <div class="library-toolbar"><div class="tabs" aria-label="日期视图"><button :class="{active:view==='source'}" @click="view='source'">来源月份</button><button :class="{active:view==='observed'}" @click="view='observed'">新增发现日期</button></div><div v-if="state.mode==='source'" class="library-actions"><button class="secondary" :class="{chosen:manager.active}" :disabled="busy" @click="manager.toggle">{{manager.active?'完成管理':'管理'}}</button><button class="primary" :disabled="busy||manager.active" @click="prepareBackup">备份当前筛选</button></div><span v-else class="backup-label">备份视图 · {{state.excluded}} 项未纳入当前清单</span></div>
+       <div class="library-toolbar"><div class="tabs" aria-label="日期视图"><button :class="{active:view==='source'}" @click="view='source'">来源月份</button><button :class="{active:view==='observed'}" @click="view='observed'">新增发现日期</button></div><div v-if="state.mode==='source'" class="library-actions"><button class="secondary" :class="{chosen:manager.active}" :disabled="busy" @click="manager.toggle">{{manager.active?'完成管理':'管理'}}</button><button class="primary" :disabled="busy||manager.active" @click="prepareBackup()">备份当前筛选</button></div><span v-else class="backup-label">备份视图 · {{state.excluded}} 项未纳入当前清单</span></div>
        <div class="filterbar"><select class="month-select" :aria-label="view==='source'?'来源年份选择':'发现年份选择'" v-model="year" @change="selectYear"><option value="">全部年份</option><option v-for="y in years" :key="y" :value="y">{{y}} 年</option></select><select class="month-select" :aria-label="view==='source'?'来源月份选择':'发现月份选择'" :value="month" @change="selectMonth(($event.target as HTMLSelectElement).value)"><option value="">{{view==='source'?'全部来源月份':'全部发现月份'}}</option><option v-for="[m,count] in months" :key="m" :value="m||'__unknown__'">{{m||'月份未知'}}（{{count}}）</option></select><select aria-label="来源角色" v-model="role"><option value="">全部角色</option><option v-for="(label,value) in roles" :key="value" :value="value">{{label}}</option></select><select aria-label="文件状态" v-model="status"><option value="">全部状态</option><option v-for="(label,value) in statuses" :key="value" :value="value">{{label}}</option></select><select aria-label="最小文件大小" v-model="size"><option value="">全部大小</option><option value="1048576">至少 1 MiB</option><option value="10485760">至少 10 MiB</option><option value="104857600">至少 100 MiB</option></select><div class="view-toggle"><button :class="{chosen:!listing}" @click="listing=false" aria-label="网格视图">网格</button><button :class="{chosen:listing}" @click="listing=true" aria-label="列表视图">列表</button></div></div>
        <form v-if="view==='observed'" class="datebar" @submit.prevent="queryDate"><label>首次发现日期 <input type="date" v-model="from" aria-label="开始日期"/> 至 <input type="date" v-model="to" aria-label="结束日期"/></label><button class="secondary" type="submit" :disabled="querying">查询</button><label class="baseline-toggle"><input type="checkbox" v-model="includeBaseline"/>包含首次导入记录</label><span>自动筛选，包含结束日；不是发送或下载时间。</span></form>
        <div v-if="view==='observed'" class="observation-note">{{includeBaseline?'首次导入记录的日期仅表示建立索引时间，仍标记“扫描前已存在”。':'默认排除首次导入时已有的文件，可勾选上方选项查看。'}}<span v-if="page.baseline_files&&!includeBaseline"> 当前条件另有 {{page.baseline_files.toLocaleString()}} 条首次导入记录。</span></div>
-       <div v-if="manager.active" class="manage-toolbar"><span>已选 {{selectedCount.toLocaleString()}} 个{{manager.all?'（当前筛选，跨页）':''}}</span><button class="secondary" :disabled="busy||!page.items.length" @click="manager.selectPage(page.items)">{{manager.pageSelected(page.items)?'取消本页':'选择本页'}}</button><button class="secondary" :disabled="busy||!page.total" @click="manager.selectAll">选择全部匹配结果</button><button class="text-button" :disabled="busy" @click="manager.clear">清空选择</button><button class="danger-button" :disabled="busy||!selectedCount" @click="manager.prepare">删除（{{selectedCount}}）</button></div>
+       <div v-if="manager.active" class="manage-toolbar">
+        <div class="manage-selection"><span>已选 {{selectedCount.toLocaleString()}} 个</span><button class="secondary" :disabled="busy||querying||!page.items.length" @click="manager.selectPage(page.items)">{{manager.pageSelected(page.items)?'取消本页':'选择本页'}}</button><button class="secondary" :disabled="busy||querying||!page.total" @click="manager.selectAll">选择所有匹配结果</button><button class="text-button" :disabled="busy||(!selectedCount&&!manager.all)" @click="manager.clear">清空选择</button></div>
+        <div class="manage-actions"><button class="secondary" :disabled="busy||querying||!selectedCount" @click="prepareBackup(true)">备份</button><button class="secondary" :disabled="busy||querying||!selectedCount" @click="exportSelected">导出</button><button class="danger-button" :disabled="busy||querying||!selectedCount" @click="manager.prepare">删除</button></div>
+       </div>
        <div class="result-caption"><div><strong>当前筛选 {{page.total.toLocaleString()}} 个文件</strong><span>逻辑大小 {{bytes(page.bytes)}} · 含原件、预览和临时资源，不是可释放空间</span></div><button class="text-button" @click="resetFilters">清空筛选</button></div>
        <div v-if="querying" class="query-indicator" role="status">正在更新筛选结果…</div>
        <div v-if="!page.items.length&&!querying" class="no-results"><template v-if="view==='observed'&&!includeBaseline&&page.baseline_files"><p>{{page.baseline_files.toLocaleString()}} 个文件属于首次导入记录，默认不列为后续新增。</p><button class="secondary" @click="showInitialImport">查看首次导入记录</button></template><template v-else><p>没有符合当前条件的文件。</p><button class="secondary" @click="resetFilters">清空筛选</button></template></div>
@@ -221,7 +233,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
   </div>
  </main>
  <div v-if="selected" class="modal-backdrop" @click.self="closeDetail"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="媒体详情"><button class="close-modal" @click="closeDetail" aria-label="关闭详情">×</button><div class="detail-preview"><video v-if="mediaURL&&selected.format==='iso-bmff'&&!playError" :src="mediaURL" :poster="selected.cover_id&&!failed.has(selected.id)?thumb(selected):undefined" controls preload="metadata" @error="playError=true"></video><img v-else-if="mediaURL&&!playError" :src="mediaURL" alt="媒体预览" @error="playError=true"/><span v-else>{{playError?'此文件当前无法预览；可能缺少对应编码支持。':'此格式暂不支持内置预览，原文件已保留。'}}</span></div><h2>{{name(selected)}}</h2><dl><dt>源相对路径</dt><dd>{{selected.relative_path}}</dd><dt>类型 / 来源角色</dt><dd>{{kindName(selected.kind)}} / {{roles[selected.role]}}</dd><dt>来源月份</dt><dd>{{selected.source_month||'未知'}}</dd><dt>逻辑大小 / 格式</dt><dd>{{bytes(selected.bytes)}} / {{selected.format}} · {{statuses[selected.status]}}</dd><dt>首次发现</dt><dd>{{fmtTime(selected.first_seen_at)}} · {{methods[selected.observation_method]??'未知'}}</dd><dt>稳定性</dt><dd>{{selected.stability==='stable_heuristic'?'通过稳定性检查（启发式）':readiness(selected)||'状态未知'}}</dd><dt>稳定观察时间</dt><dd>{{fmtTime(selected.stable_observed_at)}}</dd><dt>文件系统创建时间</dt><dd>{{fmtTime(selected.fs_created_at)}}</dd><dt>文件系统修改时间</dt><dd>{{fmtTime(selected.fs_modified_at)}}</dd></dl><details v-if="history.length" class="history"><summary>查看已保存的观察记录（{{history.length}}）</summary><p v-for="(h,i) in history" :key="i">{{fmtTime(h.at)}} · {{eventNames[h.kind]??h.kind}}</p></details><p>首次发现是本工具的观察证据，不是 QQ 下载时间；稳定和文件头识别也不证明完整下载。原件、封面和临时文件分别管理。</p></section></div>
- <MediaDeleteDialog v-if="manager.dialog" :job="manager.dialog" :busy="busy" :read-only="manager.dialogReadOnly" @close="manager.dialog=null" @confirm="manager.execute"/><BackupExportDialog v-if="exportFilter" :initial="exportFilter" :submitting="backupSubmitting" :submit-error="backupError" :revision="state.revision" @close="exportFilter=null" @confirm="backup"/>
+ <MediaDeleteDialog v-if="manager.dialog" :job="manager.dialog" :busy="busy" :read-only="manager.dialogReadOnly" @close="manager.dialog=null" @confirm="manager.execute"/><BackupExportDialog v-if="exportFilter" :initial="exportFilter" :selection="backupSelection" :submitting="backupSubmitting" :submit-error="backupError" :revision="state.revision" @close="exportFilter=null" @confirm="backup"/>
  <BackupLoadDialog v-if="loadPreview" :preview="loadPreview" @close="loadPreview=null" @confirm="confirmLoad"/>
 </div>
 </template>

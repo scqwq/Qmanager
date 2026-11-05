@@ -11,15 +11,19 @@ import (
 // Successful observations retain their original first-seen/history evidence.
 // A missing/replaced/unreadable candidate is excluded, never substituted.
 func (s *Media) prepareBackup(ctx context.Context, source media.Source, f media.Filter) ([]media.Item, mediabackup.BuildOptions, error) {
-	options := mediabackup.BuildOptions{Excluded: map[string]string{}}
 	items, err := s.catalog.Selected(ctx, source.ID, f)
 	if err != nil {
-		return nil, options, err
+		return nil, mediabackup.BuildOptions{}, err
 	}
 	for i := range items {
 		items[i] = media.Bind(items[i], source)
 	}
-	options.Excluded, err = s.observeSelection(ctx, source, items, nil)
+	return s.prepareBackupItems(ctx, source, items)
+}
+
+func (s *Media) prepareBackupItems(ctx context.Context, source media.Source, items []media.Item) ([]media.Item, mediabackup.BuildOptions, error) {
+	excluded, err := s.observeSelection(ctx, source, items, nil)
+	options := mediabackup.BuildOptions{Excluded: excluded}
 	for _, item := range items {
 		if reason := options.Excluded[item.InstanceID]; reason != "" {
 			s.mu.Lock()

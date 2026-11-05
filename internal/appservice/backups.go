@@ -420,7 +420,7 @@ func (s *Media) backupJob(parent context.Context, phase string, fn func(context.
 	go func() {
 		defer cancel()
 		defer close(done)
-		taskName := map[string]string{"restoring": "加载备份", "verifying": "核对文件", "deleting": "删除本地备份包", "preparing_delete": "回收前核对", "recycling": "回收源文件"}[phase]
+		taskName := map[string]string{"exporting": "导出媒体", "restoring": "加载备份", "verifying": "核对文件", "deleting": "删除本地备份包", "preparing_delete": "回收前核对", "recycling": "回收源文件"}[phase]
 		if taskName == "" {
 			taskName = "后台任务"
 		}

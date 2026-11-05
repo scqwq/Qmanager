@@ -127,7 +127,7 @@ func (s *Media) busy() bool {
 	if s.jobCancel != nil {
 		return true
 	}
-	return s.state.Phase == "preparing_backup" || s.state.Phase == "backup" || s.state.Phase == "verifying" || s.state.Phase == "discovering" || s.state.Phase == "restoring" || s.state.Phase == "deleting" || s.state.Phase == "preparing_delete" || s.state.Phase == "recycling"
+	return s.state.Phase == "exporting" || s.state.Phase == "preparing_backup" || s.state.Phase == "backup" || s.state.Phase == "verifying" || s.state.Phase == "discovering" || s.state.Phase == "restoring" || s.state.Phase == "deleting" || s.state.Phase == "preparing_delete" || s.state.Phase == "recycling"
 }
 func (s *Media) stopLocked() {
 	if s.cancel != nil {
@@ -456,6 +456,14 @@ func (s *Media) Backup(parent context.Context, target string, f media.Filter) er
 	return s.BackupFormat(parent, target, f, "directory")
 }
 func (s *Media) BackupFormat(parent context.Context, target string, f media.Filter, format string) error {
+	return s.backupFormat(parent, target, f, format, nil)
+}
+
+func (s *Media) BackupSelected(parent context.Context, target string, request CleanupRequest, format string) error {
+	return s.backupFormat(parent, target, media.Filter{}, format, &request)
+}
+
+func (s *Media) backupFormat(parent context.Context, target string, f media.Filter, format string, request *CleanupRequest) error {
 	s.op.Lock()
 	defer s.op.Unlock()
 	if s.busy() {
@@ -471,7 +479,18 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 	if err != nil {
 		return err
 	}
-	estimate, err := s.BackupEstimate(f)
+	source, err := s.currentMediaSource()
+	if err != nil {
+		return err
+	}
+	var selected []media.Item
+	var estimate mediabackup.Preview
+	if request == nil {
+		estimate, err = s.BackupEstimate(f)
+	} else {
+		selected, err = s.selectedMedia(parent, source, *request)
+		estimate = mediabackup.Plan(selected, f)
+	}
 	if err != nil {
 		return err
 	}
@@ -482,13 +501,6 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	if s.state.Source == nil || s.state.Mode != "source" {
-		s.mu.Unlock()
-		return errors.New("请先选择媒体来源")
-	}
-	source := *s.state.Source
-	s.mu.Unlock()
 	// Invalid output, empty selections and insufficient space must not stop
 	// observation: pending files still need their later stability checks.
 	budget := estimate.EstimatedPeak
@@ -529,7 +541,14 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 		defer cancel()
 		defer close(done)
 		var result mediabackup.Result
-		items, options, err := s.prepareBackup(ctx, source, f)
+		var items []media.Item
+		var options mediabackup.BuildOptions
+		var err error
+		if request == nil {
+			items, options, err = s.prepareBackup(ctx, source, f)
+		} else {
+			items, options, err = s.prepareBackupItems(ctx, source, selected)
+		}
 		if err == nil {
 			s.mu.Lock()
 			s.state.Phase = "backup"
@@ -559,6 +578,7 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 		if result.Path != "" {
 			row, e := s.registerBackup(context.WithoutCancel(ctx), result.Path)
 			if e == nil {
+				row.SelectedOnly = request != nil
 				row.OriginalFiles = &catalog.BackupFileStatus{State: "present", CheckedAt: time.Now().UTC(), Total: result.Files, Present: result.Files}
 				if saveErr := s.catalog.SaveBackup(row); saveErr != nil {
 					diagnostics.Record(ctx, "error", "backup.presence_write_failed", "未能保存初始源文件状态")

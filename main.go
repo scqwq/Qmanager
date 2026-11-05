@@ -178,6 +178,10 @@ func (a *App) ChooseSettingsDirectory(kind, current string) (string, error) {
 	case "source":
 		options.Title = "选择默认 QQ 数据文件夹（如最外层 Tencent Files）"
 		options.DefaultDirectory = appservice.DirectoryDialogStart(current, settings.SourceDirectory)
+	case "export":
+		options.Title = "选择默认导出父目录"
+		options.CanCreateDirectories = true
+		options.DefaultDirectory = appservice.DirectoryDialogStart(current, settings.ExportDirectory)
 	case "backup":
 		options.Title = "选择默认备份保存目录（可新建文件夹）"
 		options.CanCreateDirectories = true
@@ -187,6 +191,29 @@ func (a *App) ChooseSettingsDirectory(kind, current string) (string, error) {
 	}
 	return runtime.OpenDirectoryDialog(a.ctx, options)
 }
+func (a *App) GetSelectedBackupEstimate(request appservice.CleanupRequest) (mediabackup.Preview, error) {
+	return a.media.SelectedBackupEstimate(a.ctx, request)
+}
+
+func (a *App) CreateSelectedBackup(request appservice.CleanupRequest, format, path string) error {
+	return a.media.BackupSelected(a.ctx, path, request, format)
+}
+
+func (a *App) ExportSelectedMedia(request appservice.CleanupRequest) error {
+	settings, err := a.media.Settings()
+	if err != nil {
+		return err
+	}
+	path := settings.ExportDirectory
+	if path == "" {
+		path, err = runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择导出父目录", CanCreateDirectories: true})
+		if err != nil || path == "" {
+			return err
+		}
+	}
+	return a.media.ExportSelected(a.ctx, path, request)
+}
+
 func (a *App) GetBackupDirectory() (string, error) { return a.media.BackupDirectory() }
 func (a *App) ChooseBackupDestination() (string, error) {
 	defaultPath, err := a.media.BackupDirectory()
@@ -323,7 +350,7 @@ func startDiagnostics(private string) {
 		if e = logger.EnableCrashOutput(); e != nil {
 			logger.Record(context.Background(), "warning", "crash.capture_unavailable", "Go 崩溃详情记录未能启用")
 		}
-		logger.Record(context.Background(), "info", "app.start", "Qman 0.8.1 / diagnostics-1 启动")
+		logger.Record(context.Background(), "info", "app.start", "Qman 0.9.0 / diagnostics-1 启动")
 	}
 }
 func main() {

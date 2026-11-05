@@ -155,7 +155,7 @@ func (s *Media) directorySearchOptions(ctx context.Context, hint, backupHint str
 	if err != nil {
 		return opts, err
 	}
-	opts.Excluded = append(opts.Excluded, settings.BackupDirectory, s.Preference("backup_directory"))
+	opts.Excluded = append(opts.Excluded, settings.BackupDirectory, settings.ExportDirectory, s.Preference("backup_directory"))
 	paths, err := s.catalog.BackupPaths(ctx)
 	if err != nil {
 		return opts, err

@@ -78,56 +78,7 @@ func (s *Media) PrepareMediaDelete(parent context.Context, request CleanupReques
 		if media.Overlap(source.Resolved, s.private) {
 			return errors.New("媒体来源与应用数据重叠")
 		}
-		if err = media.ValidateFilter(request.Filter); err != nil {
-			return err
-		}
-		var items []media.Item
-		if request.AllMatching {
-			request.Filter.HideVideoCovers = true
-			if len(request.IDs) != 0 {
-				return errors.New("选择方式冲突")
-			}
-			items, err = s.catalog.Selected(ctx, source.ID, request.Filter)
-			for i := range items {
-				items[i] = media.Bind(items[i], source)
-			}
-			if len(request.ExcludeIDs) > media.MaxFiles {
-				return errors.New("排除项超过上限")
-			}
-			excluded := map[string]bool{}
-			for _, id := range request.ExcludeIDs {
-				excluded[id] = true
-			}
-			kept := items[:0]
-			for _, item := range items {
-				if !excluded[item.InstanceID] {
-					kept = append(kept, item)
-				}
-			}
-			items = kept
-		} else {
-			if len(request.ExcludeIDs) != 0 {
-				return errors.New("选择方式冲突")
-			}
-			if len(request.IDs) == 0 || len(request.IDs) > media.MaxFiles {
-				return errors.New("请选择媒体文件")
-			}
-			seen := map[string]bool{}
-			for _, id := range request.IDs {
-				if err = ctx.Err(); err != nil {
-					return err
-				}
-				if seen[id] {
-					continue
-				}
-				seen[id] = true
-				item, e := s.catalog.Item(source.ID, id)
-				if e != nil {
-					return errors.New("部分所选记录已变化，请重新选择")
-				}
-				items = append(items, media.Bind(item, source))
-			}
-		}
+		items, err := s.selectedMedia(ctx, source, request)
 		if err != nil {
 			return err
 		}

@@ -13,6 +13,7 @@ import (
 type PathSettings struct {
 	SourceDirectory string `json:"source_directory"`
 	BackupDirectory string `json:"backup_directory"`
+	ExportDirectory string `json:"export_directory"`
 }
 
 func (s *Media) Settings() (PathSettings, error) {
@@ -72,6 +73,7 @@ func (s *Media) saveSettingsLocked(settings PathSettings) (PathSettings, error) 
 	}
 	settings.SourceDirectory = strings.TrimSpace(settings.SourceDirectory)
 	settings.BackupDirectory = strings.TrimSpace(settings.BackupDirectory)
+	settings.ExportDirectory = strings.TrimSpace(settings.ExportDirectory)
 	// An unchanged, temporarily offline preference can remain saved while the
 	// other field is edited or cleared. Every actual operation rechecks its path.
 	if settings.SourceDirectory != "" && settings.SourceDirectory != previous.SourceDirectory {
@@ -83,9 +85,18 @@ func (s *Media) saveSettingsLocked(settings PathSettings) (PathSettings, error) 
 	if settings.SourceDirectory != "" && media.Overlap(settings.SourceDirectory, s.private) {
 		return PathSettings{}, errors.New("默认 QQ 数据文件夹必须与 Qman 应用数据分开")
 	}
-	if settings.BackupDirectory != "" {
-		if settings.BackupDirectory != previous.BackupDirectory {
-			settings.BackupDirectory, err = settingsDirectory(settings.BackupDirectory, false)
+	for _, output := range []struct {
+		path            *string
+		previous, label string
+	}{
+		{&settings.BackupDirectory, previous.BackupDirectory, "默认备份保存目录"},
+		{&settings.ExportDirectory, previous.ExportDirectory, "默认导出父目录"},
+	} {
+		if *output.path == "" {
+			continue
+		}
+		if *output.path != output.previous {
+			*output.path, err = settingsDirectory(*output.path, false)
 			if err != nil {
 				return PathSettings{}, err
 			}
@@ -95,8 +106,8 @@ func (s *Media) saveSettingsLocked(settings PathSettings) (PathSettings, error) 
 			return PathSettings{}, e
 		}
 		for _, root := range roots {
-			if media.Overlap(root, settings.BackupDirectory) {
-				return PathSettings{}, errors.New("默认备份保存目录必须与 QQ 数据文件夹、已登记来源和 Qman 应用数据分开")
+			if media.Overlap(root, *output.path) {
+				return PathSettings{}, errors.New(output.label + "必须与 QQ 数据文件夹、已登记来源和 Qman 应用数据分开")
 			}
 		}
 	}
@@ -104,7 +115,7 @@ func (s *Media) saveSettingsLocked(settings PathSettings) (PathSettings, error) 
 	if err != nil {
 		return PathSettings{}, err
 	}
-	// Both defaults publish together; a rejected field cannot partly save another.
+	// Defaults publish together; a rejected field cannot partly save another.
 	if err = s.catalog.SetPreference("path_defaults", string(payload)); err != nil {
 		return PathSettings{}, err
 	}

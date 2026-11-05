@@ -10,6 +10,7 @@ export function errorFeedback(value:unknown):Feedback {
  else if(/开始日期不能晚于结束日期/.test(text)){title='日期范围填写反了';advice='开始日期应早于或等于结束日期。'}
  else if(/当前任务.*(未结束|尚未结束)|当前任务尚未结束/.test(text)){title='上一项操作还在进行';advice='等它完成，或取消当前任务后再试。'}
  else if(/检测到 QQ 仍在运行/.test(text)){title='检测到 QQ 仍在运行';advice='目前不区分账号，请完全退出后回收。'}
+ else if(/导出父目录.*分开/.test(text)){title='请选择独立的导出位置';advice='导出目录须与 QQ 数据目录和 Qman 应用数据分开。'}
  else if(/退出\s*QQ|QQ.*(运行|进程|退出)/.test(text)){title='请先确认 QQ 已退出';advice='手动完全退出 QQ 后重新检查；无法确认进程状态时，不会执行源文件操作。'}
  else if(/重叠|备份.*与.*分开|保存.*与.*分开/.test(text)){title='请换一个备份保存位置';advice='备份位置须与 QQ 数据目录、Qman 应用数据和已有来源分开。'}
  else if(/索引.*(容量|空间).*(不足|上限)|索引容量/.test(text)){title='应用记录空间不足';advice='先在设置中备份应用记录，再维护索引；不要直接删除数据库。'}
@@ -38,6 +39,7 @@ export function resultFeedback(detail:string):Feedback|null {
  if(detail.startsWith('快速更新完成'))return {...result,page:'media',title:'已补充新文件',advice:'旧文件的变化和缺失尚未全面检查，需要时请使用全盘更新。'}
  if(detail.startsWith('更新已终止'))return {...result,page:'media',title:'更新已停止，已有清单已保留',advice:'后台监控也已暂停；需要时点击快速更新。'}
  if(detail.startsWith('已发现并保存'))return {...result,page:'media',title:'已找到并保存媒体来源',advice:'在左侧选择账号，再点击快速更新建立清单。'}
+ if(detail.startsWith('已导出'))return {...result,page:'media',tone:count(detail,'跳过')?'warning':'success',title:'媒体导出完成'}
  if(detail.startsWith('备份已完成'))return {...result,page:'media',tone:'success',title:'备份已完成，校验通过',advice:'监控已暂停；需要继续监控时点击快速更新。'}
  if(detail.startsWith('备份校验通过'))return {...result,page:'media',tone:'success',title:'备份已打开，校验通过',advice:'已读取包内保存的观察记录；源目录断开后也可查看这份备份。'}
  if(detail.includes('补回')&&detail.includes('仅 Qman')){

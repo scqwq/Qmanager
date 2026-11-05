@@ -12,6 +12,7 @@ export function coverageExplanation(value:string){
 
 export function libraryStatus(state:State){
  const gap=state.needs_full?coverageExplanation(state.coverage)||'部分文件变化可能没有完整记录。':''
+ if(state.phase==='exporting')return {title:state.check_stage==='stability'?'正在核对所选文件':'正在导出媒体',description:'',gap,tone:gap?'warning':'info',working:true}
  if(['preparing_backup','preparing_delete'].includes(state.phase)){
   const deleting=state.phase==='preparing_delete'
   const files=deleting?'待回收文件':'备份文件'

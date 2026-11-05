@@ -10,8 +10,8 @@ import CloudPage from './CloudPage.vue'
 
 const props=defineProps<{busy:boolean;recordsMessage?:string;recordsError?:string;cloudLoginFromBackup?:boolean}>()
 const emit=defineEmits<{imported:[];exportRecords:[]}>()
-const saved=ref<PathSettings>({source_directory:'',backup_directory:''})
-const source=ref(''),backup=ref(''),error=ref(''),message=ref('')
+const saved=ref<PathSettings>({source_directory:'',backup_directory:'',export_directory:''})
+const source=ref(''),backup=ref(''),exportDirectory=ref(''),error=ref(''),message=ref('')
 const loading=ref(true),saving=ref(false),choosing=ref(false),importing=ref(false),loaded=ref(false)
 const logsOpen=ref(false)
 const cloudOpen=ref(!!props.cloudLoginFromBackup)
@@ -25,18 +25,19 @@ async function openCloud(){settingsScroll=window.scrollY;cloudOpen.value=true;aw
 async function closeCloud(){cloudOpen.value=false;backupUploadHint.value=false;await nextTick();window.scrollTo(0,settingsScroll)}
 const pending=computed(()=>loading.value||saving.value||choosing.value||importing.value||searching.value)
 const disabled=computed(()=>props.busy||pending.value||!loaded.value)
-const dirty=computed(()=>source.value.trim()!==saved.value.source_directory||backup.value.trim()!==saved.value.backup_directory)
+const dirty=computed(()=>source.value.trim()!==saved.value.source_directory||backup.value.trim()!==saved.value.backup_directory||exportDirectory.value.trim()!==saved.value.export_directory)
 let disposed=false
-function reset(){source.value=saved.value.source_directory;backup.value=saved.value.backup_directory;error.value='';message.value='';searchHint.value='';searchCandidates.value=[]}
+function reset(){source.value=saved.value.source_directory;backup.value=saved.value.backup_directory;exportDirectory.value=saved.value.export_directory;error.value='';message.value='';searchHint.value='';searchCandidates.value=[]}
 async function load(){loading.value=true;error.value='';try{const value=await api().GetSettings();if(!disposed){saved.value=value;reset();loaded.value=true}}catch(e){if(!disposed)error.value=String(e)}finally{loading.value=false}}
-async function choose(kind:'source'|'backup'){
+async function choose(kind:'source'|'backup'|'export'){
+ const field={source,backup,export:exportDirectory}[kind]
  choosing.value=true;error.value='';message.value=''
- try{const path=await api().ChooseSettingsDirectory(kind,kind==='source'?source.value:backup.value);if(path&&!disposed){if(kind==='source')source.value=path;else backup.value=path}}
+ try{const path=await api().ChooseSettingsDirectory(kind,field.value);if(path&&!disposed)field.value=path}
  catch(e){if(!disposed)error.value=String(e)}finally{choosing.value=false}
 }
 async function save(){
  saving.value=true;error.value='';message.value=''
- try{const value=await api().SaveSettings({source_directory:source.value.trim(),backup_directory:backup.value.trim()});if(!disposed){saved.value=value;reset();message.value='默认目录已保存。'}}
+ try{const value=await api().SaveSettings({source_directory:source.value.trim(),backup_directory:backup.value.trim(),export_directory:exportDirectory.value.trim()});if(!disposed){saved.value=value;reset();message.value='默认目录已保存。'}}
  catch(e){if(!disposed)error.value=String(e)}finally{saving.value=false}
 }
 async function importSource(){
@@ -96,6 +97,10 @@ onUnmounted(()=>{disposed=true;const id=searchID;finishSearch(id);if(id)void api
    <label for="default-backup">默认备份保存目录</label>
    <div class="settings-path"><input id="default-backup" v-model="backup" @input="message=''" :disabled="disabled" placeholder="未设置，沿用上次选择的保存目录" spellcheck="false"/><button type="button" class="secondary" :disabled="disabled" @click="choose('backup')">选择文件夹</button><button type="button" class="text-button" :disabled="disabled||!backup" @click="backup='';message=''">清除</button></div>
    <details class="settings-help"><summary>未设置时如何保存？</summary><p>沿用上次保存位置；首次选择会填入默认目录。单次选择不会覆盖已有默认值。</p></details>
+  </section>
+  <section class="settings-field">
+   <label for="default-export">默认导出父目录</label>
+   <div class="settings-path"><input id="default-export" v-model="exportDirectory" @input="message=''" :disabled="disabled" placeholder="未设置，每次导出时选择" spellcheck="false"/><button type="button" class="secondary" :disabled="disabled" @click="choose('export')">选择文件夹</button><button type="button" class="text-button" :disabled="disabled||!exportDirectory" @click="exportDirectory='';message=''">清除</button></div>
   </section>
   <div class="settings-actions"><button type="submit" class="primary" :disabled="disabled||!dirty">{{saving?'正在保存…':'保存设置'}}</button><button type="button" class="secondary" :disabled="disabled||!dirty" @click="reset">撤销修改</button><small>保存只记录路径，不会导入或扫描。</small></div>
  </form>

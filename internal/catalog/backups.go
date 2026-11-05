@@ -12,6 +12,7 @@ import (
 )
 
 type BackupRecord struct {
+	SelectedOnly        bool                 `json:"selected_only,omitempty"`
 	Display             BackupDisplay        `json:"display"`
 	HasLoaded           bool                 `json:"has_loaded"`
 	OriginalFiles       *BackupFileStatus    `json:"original_files,omitempty"`
@@ -145,6 +146,7 @@ func (c *Catalog) SaveBackup(row BackupRecord) error {
 		row.SourceCleanupDetail = previous.SourceCleanupDetail
 	}
 	if err == nil {
+		row.SelectedOnly = row.SelectedOnly || previous.SelectedOnly
 		if row.OriginalFiles == nil {
 			row.OriginalFiles = previous.OriginalFiles
 		}

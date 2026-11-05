@@ -55,7 +55,7 @@ func systemCrashes() ([]Crash, string) {
 	}
 	closeEvent := eventDLL.NewProc("EvtClose")
 	defer closeEvent.Call(h)
-	for i := 0; i < 64 && len(result) < 5; i++ {
+	for i := 0; i < 64; i++ {
 		var event uintptr
 		var count uint32
 		ok, _, e := eventDLL.NewProc("EvtNext").Call(h, 1, uintptr(unsafe.Pointer(&event)), 100, 0, uintptr(unsafe.Pointer(&count)))

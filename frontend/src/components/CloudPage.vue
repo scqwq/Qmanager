@@ -64,7 +64,7 @@ onUnmounted(()=>{disposed=true;modeGeneration++;stopQR();if(statusTimer)clearTim
  </template>
  <template v-else>
   <p class="cloud-account">已登录 · {{status.account}}</p>
-  <div class="cloud-target"><span class="cloud-target-path">保存到：{{targetPath}}</span><button type="button" class="secondary" :disabled="working||uploading" @click="picker=true">选择目录</button></div>
+  <div class="cloud-target"><span class="cloud-target-path">当前操作目录：{{targetPath}}</span><button type="button" class="secondary" :disabled="working||uploading" @click="picker=true">选择目录</button></div>
   <div class="cloud-actions"><button type="button" class="secondary" :disabled="working||uploading" @click="newFolder">新建文件夹</button><button type="button" class="primary" :disabled="working||uploading" @click="chooseFile">上传文件</button></div>
   <div v-if="localFile" class="cloud-file-choice"><div><strong>{{localFile.name}}</strong><span>{{bytes(localFile.bytes)}}</span></div><button type="button" class="primary" :disabled="working||uploading" @click="startUpload">开始上传</button><button type="button" class="text-button" :disabled="working||uploading" @click="localFile=null">取消选择</button></div>
  </template>

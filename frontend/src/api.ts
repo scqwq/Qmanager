@@ -1,8 +1,8 @@
 export interface DirectorySearchResult {status:string;candidates:string[];complete:boolean}
 export interface PathSettings {source_directory:string;backup_directory:string}
-export interface DiagnosticEntry {at:string;level:string;event:string;task?:string;item?:string;detail:string}
-export interface DiagnosticCrash {at:string;app:string;module:string;code:string;offset:string}
-export interface Diagnostics {entries:DiagnosticEntry[];crashes:DiagnosticCrash[];crash_text:{at:string;text:string;truncated:boolean}[];system_note:string;write_note:string;directory:string}
+export interface DiagnosticEntry {id:string;at:string;level:string;event:string;task?:string;item?:string;detail:string}
+export interface DiagnosticCrash {id:string;at:string;app:string;module:string;code:string;offset:string}
+export interface Diagnostics {entries:DiagnosticEntry[];crashes:DiagnosticCrash[];crash_text:{id:string;at:string;text:string;truncated:boolean}[];system_note:string;write_note:string;directory:string}
 export interface AppearanceSettings {theme:'light'|'dark';color:string;image_id:string;image_name:string;fit:'cover'|'contain';panel_opacity:number}
 export interface AppearanceImage {id:string;name:string}
 export const pathSettingsChanged='qman:path-settings-changed'
@@ -21,8 +21,12 @@ export interface History {at:string;kind:string;detail:string}
 export interface BackupFileStatus {state:string;checked_at:string;stale:boolean;total:number;present:number;missing:number;changed:number;unknown:number}
 export interface BackupCleanupStatus {state:string;at:string;joint:boolean;recycled:number;skipped:number;failed:number;uncertain:number;remaining:number}
 export interface BackupRestoreStatus {state:string;started_at:string;finished_at?:string;target?:string;written:number;skipped:number;conflicts:number;fallback:number;failed:number;detail?:string}
-export interface BackupRecord {original_files?:BackupFileStatus;cleanup_result?:BackupCleanupStatus;restore_result?:BackupRestoreStatus;local_state?:string;local_detail?:string;location_checked_at?:string;source_cleanup_job?:string;source_cleanup_detail?:string;id:string;name:string;path:string;format:string;created_at:string;files:number;bytes:number;selection:Filter;digest:string;status:string;detail:string}
-export interface BackupPreview {target_note?:string;record:BackupRecord;restore_prefix:string;target:string}
+export type BackupPresenceKey='package'|'original'|'cloud'
+export type BackupMarkState='present'|'missing'
+export interface BackupDisplay {marks?:Partial<Record<BackupPresenceKey,{state:BackupMarkState;at:string}>>;cloud?:{state:string;detail:string;checked_at:string}}
+export interface BackupEvent {at:string;action:string;detail:string}
+export interface BackupRecord {display?:BackupDisplay;has_loaded?:boolean;original_files?:BackupFileStatus;cleanup_result?:BackupCleanupStatus;restore_result?:BackupRestoreStatus;local_state?:string;local_detail?:string;location_checked_at?:string;source_cleanup_job?:string;source_cleanup_detail?:string;id:string;name:string;path:string;format:string;created_at:string;files:number;bytes:number;selection:Filter;digest:string;status:string;detail:string}
+export interface BackupPreview {ticket?:string;previous_path?:string;target_note?:string;record:BackupRecord;restore_prefix:string;target:string}
 export interface CleanupJob {pending?:number;backup_ids?:string[];id:string;source_id:string;source_name:string;root:string;state:string;created_at:string;expires_at:string;filter:Filter;total:number;ready:number;skipped:number;recycled:number;failed:number;uncertain:number;bytes:number}
 export interface CleanupItem {item:Item;sha256:string;status:string;detail:string}
 export interface CleanupRequest {exclude_ids?:string[];ids:string[];all_matching:boolean;filter:Filter}
@@ -44,4 +48,12 @@ interface CloudBridge {
  ListCloudFolders(parent:string,next:string):Promise<CloudFolderPage>;CreateCloudFolder(parent:string,name:string):Promise<CloudFolder>;
  ChooseCloudFile():Promise<CloudLocalFile>;StartCloudUpload(parent:string,ticket:string):Promise<void>;CancelCloudUpload():Promise<void>;
 }
-interface Bridge extends CloudBridge {}
+interface Bridge extends CloudBridge {
+ InspectBackupRecord(id:string,explicit:boolean):Promise<BackupRecord>
+ MarkBackupRecord(id:string,marks:Partial<Record<BackupPresenceKey,BackupMarkState>>):Promise<BackupDisplay>
+ GetBackupEvents(id:string,offset:number):Promise<BackupEvent[]>
+ GetBackupLogIndex():Promise<BackupRecord[]>
+ EditDiagnosticRecord(kind:'run'|'crash'|'system',id:string):Promise<void>
+ LoadSelectedBackup(ticket:string,target:string):Promise<void>
+ UploadRegisteredBackup(id:string,parent:string):Promise<void>
+}

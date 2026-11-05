@@ -6,11 +6,13 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"qqarchive/internal/catalog"
+	"qqarchive/internal/diagnostics"
 	"qqarchive/internal/discovery"
 	"qqarchive/internal/media"
 	"qqarchive/internal/mediabackup"
@@ -555,7 +557,14 @@ func (s *Media) BackupFormat(parent context.Context, target string, f media.Filt
 			}
 		}
 		if result.Path != "" {
-			if _, e := s.registerBackup(context.WithoutCancel(ctx), result.Path); e != nil && err == nil {
+			row, e := s.registerBackup(context.WithoutCancel(ctx), result.Path)
+			if e == nil {
+				row.OriginalFiles = &catalog.BackupFileStatus{State: "present", CheckedAt: time.Now().UTC(), Total: result.Files, Present: result.Files}
+				if saveErr := s.catalog.SaveBackup(row); saveErr != nil {
+					diagnostics.Record(ctx, "error", "backup.presence_write_failed", "未能保存初始源文件状态")
+				}
+				s.backupEvent(row, "创建备份", fmt.Sprintf("保存 %d 个文件 · 排除 %d 项", result.Files, result.Excluded))
+			} else if err == nil {
 				err = errors.New("备份已保存，但登记失败；请保留产物并重新加载")
 			}
 		}

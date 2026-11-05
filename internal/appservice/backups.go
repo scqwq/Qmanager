@@ -3,6 +3,7 @@ package appservice
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,8 @@ import (
 )
 
 type BackupPreview struct {
+	PreviousPath  string               `json:"previous_path,omitempty"`
+	Ticket        string               `json:"ticket,omitempty"`
 	Record        catalog.BackupRecord `json:"record"`
 	RestorePrefix string               `json:"restore_prefix"`
 	Target        string               `json:"target"`
@@ -49,6 +52,14 @@ func (s *Media) PreviewHistoryBackup(ctx context.Context, id string) (BackupPrev
 
 func (s *Media) Preference(key string) string { v, _ := s.catalog.Preference(key); return v }
 func (s *Media) registerBackup(ctx context.Context, path string, expectedID ...string) (catalog.BackupRecord, error) {
+	row, err := s.inspectBackupPackage(ctx, path, expectedID...)
+	if err != nil {
+		return row, err
+	}
+	return row, s.catalog.SaveBackup(row)
+}
+
+func (s *Media) inspectBackupPackage(ctx context.Context, path string, expectedID ...string) (catalog.BackupRecord, error) {
 	pack, err := mediabackup.OpenPackage(ctx, path, filepath.Join(s.private, "temporary"), nil)
 	if err != nil {
 		return catalog.BackupRecord{}, err
@@ -79,8 +90,7 @@ func (s *Media) registerBackup(ctx context.Context, path string, expectedID ...s
 	if row.Format == "directory" {
 		row.Bytes += pack.MetadataBytes
 	}
-	err = s.catalog.SaveBackup(row)
-	return row, err
+	return row, nil
 }
 func (s *Media) Backups() ([]catalog.BackupRecord, error) {
 	rows, err := s.catalog.Backups()
@@ -93,6 +103,14 @@ func (s *Media) Backups() ([]catalog.BackupRecord, error) {
 	return rows, nil
 }
 func (s *Media) PreviewBackup(parent context.Context, path string, expectedID ...string) (BackupPreview, error) {
+	return s.previewBackup(parent, path, true, expectedID...)
+}
+
+func (s *Media) PreviewExternalBackup(parent context.Context, path, expectedID string) (BackupPreview, error) {
+	return s.previewBackup(parent, path, false, expectedID)
+}
+
+func (s *Media) previewBackup(parent context.Context, path string, register bool, expectedID ...string) (BackupPreview, error) {
 	s.op.Lock()
 	defer s.op.Unlock()
 	var preview BackupPreview
@@ -131,13 +149,32 @@ func (s *Media) PreviewBackup(parent context.Context, path string, expectedID ..
 			return preview, errors.New("备份必须与 QQ 来源和应用私有目录分离")
 		}
 	}
-	row, err := s.registerBackup(ctx, path, expectedID...)
+	row, err := s.inspectBackupPackage(ctx, path, expectedID...)
 	if err != nil {
 		return preview, err
 	}
+	previous, err := s.catalog.Backup(row.ID)
+	if err == nil {
+		if previous.Digest != row.Digest {
+			return preview, errors.New("同一备份编号对应不同清单，拒绝合并")
+		}
+		if !register && previous.DeletePath != "" {
+			return preview, errors.New("该备份有未完成的删除任务，请先处理")
+		}
+		if !register {
+			preview.PreviousPath = previous.Path
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return preview, err
+	}
+	if register {
+		if err = s.catalog.SaveBackup(row); err != nil {
+			return preview, err
+		}
+	}
 	var m mediabackup.Manifest
 	_ = json.Unmarshal([]byte(row.Manifest), &m)
-	preview = BackupPreview{Record: row, RestorePrefix: m.RestorePrefix}
+	preview.Record, preview.RestorePrefix = row, m.RestorePrefix
 	if m.RestorePrefix != "" {
 		preview.Target, preview.TargetNote, err = s.RestoreDirectory()
 		if err != nil {
@@ -147,8 +184,66 @@ func (s *Media) PreviewBackup(parent context.Context, path string, expectedID ..
 	return preview, nil
 }
 func (s *Media) RestoreBackup(parent context.Context, id, target string) error {
+	return s.restoreBackup(parent, id, target, nil)
+}
+
+func (s *Media) RestoreExternalBackup(parent context.Context, candidate catalog.BackupRecord, target string) error {
+	return s.restoreBackup(parent, candidate.ID, target, &candidate)
+}
+
+func (s *Media) restoreBackup(parent context.Context, id, target string, candidate *catalog.BackupRecord) error {
 	return s.backupJob(parent, "restoring", func(ctx context.Context) (returnErr error) {
 		row, err := s.catalog.Backup(id)
+		var pack *mediabackup.Package
+		if candidate != nil {
+			if err == nil && (row.Digest != candidate.Digest || row.DeletePath != "") {
+				return errors.New("原备份记录已变化，请重新选择")
+			}
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			protected, e := s.protected()
+			if e != nil {
+				return e
+			}
+			path, e := media.Canonical(candidate.Path)
+			if e != nil || path != candidate.Path {
+				return errors.New("所选备份路径已变化，请重新选择")
+			}
+			for _, root := range protected {
+				if media.Overlap(root, path) {
+					return errors.New("备份位置与应用数据或 QQ 来源重叠")
+				}
+			}
+			before, e := os.Lstat(path)
+			if e != nil {
+				return errors.New("所选备份已无法访问，请重新选择")
+			}
+			pack, err = mediabackup.OpenPackage(ctx, path, filepath.Join(s.private, "temporary"), s.backupProgress)
+			if err != nil {
+				return err
+			}
+			defer pack.Cleanup()
+			if pack.Manifest.ID != candidate.ID || catalog.ManifestDigest(pack.Bytes) != candidate.Digest {
+				return errors.New("所选备份已变化，未更新登记位置")
+			}
+			after, e := os.Lstat(path)
+			if e != nil || !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+				return errors.New("所选备份在核对期间已移动或变化，未更新登记位置")
+			}
+			previousPath := row.Path
+			row = *candidate
+			row.Manifest = string(pack.Bytes)
+			err = s.catalog.SaveBackup(row)
+			if err == nil {
+				action := "登记外部备份"
+				if previousPath != "" {
+					action = "使用已登记备份的副本"
+				}
+				s.backupEvent(row, action, row.Path)
+				row, err = s.catalog.Backup(id)
+			}
+		}
 		if err != nil {
 			return err
 		}
@@ -199,15 +294,22 @@ func (s *Media) RestoreBackup(parent context.Context, id, target string) error {
 			} else {
 				_ = s.catalog.SetPreference("active_backup_restore", "")
 			}
+			label := map[string]string{
+				"completed": "已完成", "qman_only": "已保存到 Qman", "fallback": "有文件保存到 Qman",
+				"partial": "部分完成", "failed": "加载失败", "cancelled": "已取消",
+			}[attempt.State]
+			s.backupEvent(row, "加载备份", fmt.Sprintf("%s · 补回 %d · 跳过 %d · 冲突 %d · 仅 Qman %d · 未完成 %d", label, attempt.Written, attempt.Skipped, attempt.Conflicts, attempt.Fallback, attempt.Failed))
 		}()
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		pack, err := mediabackup.OpenPackage(ctx, row.Path, filepath.Join(s.private, "temporary"), s.backupProgress)
-		if err != nil {
-			return err
+		if pack == nil {
+			pack, err = mediabackup.OpenPackage(ctx, row.Path, filepath.Join(s.private, "temporary"), s.backupProgress)
+			if err != nil {
+				return err
+			}
+			defer pack.Cleanup()
 		}
-		defer pack.Cleanup()
 		if pack.Manifest.ID != row.ID || catalog.ManifestDigest(pack.Bytes) != row.Digest {
 			return errors.New("备份身份已变化，请重新选择核对")
 		}
@@ -342,19 +444,29 @@ func (s *Media) backupJob(parent context.Context, phase string, fn func(context.
 	return nil
 }
 func (s *Media) ViewLoadedBackup(parent context.Context, id string) error {
-	return s.backupJob(parent, "verifying", func(ctx context.Context) error {
-		payload, err := s.catalog.Import(id)
-		if err != nil {
-			return errors.New("此备份尚未成功加载")
-		}
-		var saved importState
-		if err = json.Unmarshal(payload, &saved); err != nil {
-			return err
-		}
-		return s.showImport(ctx, saved)
+	payload, err := s.catalog.Import(id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("此备份尚未成功加载")
+	}
+	if err != nil {
+		return err
+	}
+	var saved importState
+	if err = json.Unmarshal(payload, &saved); err != nil {
+		return err
+	}
+	result := make(chan error, 1)
+	err = s.backupJob(parent, "verifying", func(ctx context.Context) error {
+		err := s.showImport(ctx, saved, true)
+		result <- err
+		return err
 	})
+	if err != nil {
+		return err
+	}
+	return <-result
 }
-func (s *Media) showImport(ctx context.Context, saved importState) error {
+func (s *Media) showImport(ctx context.Context, saved importState, requireReadable ...bool) error {
 	entries := map[string]media.Item{}
 	history := map[string][]catalog.History{}
 	for _, e := range saved.Manifest.Entries {
@@ -391,6 +503,9 @@ func (s *Media) showImport(ctx context.Context, saved importState) error {
 		}
 		attached.ID = rand.Text()
 		items = append(items, attached)
+	}
+	if len(requireReadable) > 0 && requireReadable[0] && len(items) == 0 {
+		return errors.New("此前加载的媒体已无法读取或校验，请检查恢复位置")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -463,6 +578,7 @@ func (s *Media) DeleteBackups(parent context.Context, ids []string) error {
 			if err = s.catalog.SaveBackup(row); err != nil {
 				return err
 			}
+			s.backupEvent(row, "删除本地备份包", row.Detail)
 			s.backupProgress(i+1, 0)
 		}
 		s.mu.Lock()

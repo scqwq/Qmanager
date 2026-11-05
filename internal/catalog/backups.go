@@ -12,6 +12,8 @@ import (
 )
 
 type BackupRecord struct {
+	Display             BackupDisplay        `json:"display"`
+	HasLoaded           bool                 `json:"has_loaded"`
 	OriginalFiles       *BackupFileStatus    `json:"original_files,omitempty"`
 	CleanupResult       *BackupCleanupStatus `json:"cleanup_result,omitempty"`
 	RestoreResult       *BackupRestoreStatus `json:"restore_result,omitempty"`
@@ -71,7 +73,10 @@ type BackupRestoreStatus struct {
 func isNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
 func (c *Catalog) initBackups() error {
 	_, err := c.db.Exec(`CREATE TABLE IF NOT EXISTS backup_records(id TEXT PRIMARY KEY,payload TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS backup_imports(id TEXT PRIMARY KEY,payload TEXT NOT NULL);`)
+CREATE TABLE IF NOT EXISTS backup_imports(id TEXT PRIMARY KEY,payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS backup_display(id TEXT PRIMARY KEY,digest TEXT NOT NULL,payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS backup_events(seq INTEGER PRIMARY KEY,backup_id TEXT NOT NULL,digest TEXT NOT NULL,at INTEGER NOT NULL,action TEXT NOT NULL,detail TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS backup_events_by_backup ON backup_events(backup_id,digest,at DESC,seq DESC);`)
 	return err
 }
 
@@ -92,25 +97,32 @@ func (c *Catalog) Backup(id string) (BackupRecord, error) {
 	return row.Record, err
 }
 func (c *Catalog) Backups() ([]BackupRecord, error) {
-	rows, err := c.db.Query("SELECT json_extract(payload,'$.record'),EXISTS(SELECT 1 FROM backup_imports WHERE backup_imports.id=backup_records.id) FROM backup_records ORDER BY rowid DESC LIMIT 10001")
+	rows, err := c.db.Query(`SELECT json_extract(r.payload,'$.record'),
+		EXISTS(SELECT 1 FROM backup_imports WHERE backup_imports.id=r.id),COALESCE(d.payload,'{}')
+		FROM backup_records r LEFT JOIN backup_display d ON d.id=r.id AND d.digest=json_extract(r.payload,'$.record.digest')
+		ORDER BY r.rowid DESC LIMIT 10001`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []BackupRecord{}
 	for rows.Next() {
-		var payload string
+		var payload, display string
 		var row BackupRecord
 		var imported bool
-		if err = rows.Scan(&payload, &imported); err != nil {
+		if err = rows.Scan(&payload, &imported, &display); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal([]byte(payload), &row); err != nil {
 			return nil, err
 		}
+		if err = json.Unmarshal([]byte(display), &row.Display); err != nil {
+			return nil, err
+		}
 		if imported && row.RestoreResult == nil {
 			row.RestoreResult = &BackupRestoreStatus{State: "legacy", Detail: "已有加载记录；可核对原文件读取旧结果，未重新验证落盘副本"}
 		}
+		row.HasLoaded = imported
 		out = append(out, row)
 	}
 	if len(out) > 10000 {
@@ -122,6 +134,8 @@ func (c *Catalog) SaveBackup(row BackupRecord) error {
 	// Location observations are a live UI projection, not durable proof of
 	// deletion, package integrity, or cloud verification.
 	row.LocalState, row.LocalDetail, row.LocationCheckedAt = "", "", nil
+	row.Display = BackupDisplay{}
+	row.HasLoaded = false
 	previous, err := c.Backup(row.ID)
 	if err == nil && previous.Digest != row.Digest {
 		return errors.New("同一备份编号对应不同清单，拒绝替换记录")

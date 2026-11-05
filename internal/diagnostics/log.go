@@ -26,6 +26,7 @@ const maxReadBytes = 256 << 10
 const logFiles = 3
 
 type Entry struct {
+	ID     string    `json:"id,omitempty"`
 	At     time.Time `json:"at"`
 	Level  string    `json:"level"`
 	Event  string    `json:"event"`
@@ -34,6 +35,7 @@ type Entry struct {
 	Detail string    `json:"detail"`
 }
 type Crash struct {
+	ID     string    `json:"id"`
 	At     time.Time `json:"at"`
 	App    string    `json:"app"`
 	Module string    `json:"module"`
@@ -41,6 +43,7 @@ type Crash struct {
 	Offset string    `json:"offset"`
 }
 type CrashText struct {
+	ID        string    `json:"id"`
 	At        time.Time `json:"at"`
 	Text      string    `json:"text"`
 	Truncated bool      `json:"truncated"`
@@ -226,6 +229,7 @@ func (l *Logger) Snapshot() (Snapshot, error) {
 		for reader.Scan() {
 			var e Entry
 			if json.Unmarshal(reader.Bytes(), &e) == nil {
+				e.ID = diagnosticID(reader.Bytes())
 				s.Entries = append(s.Entries, e)
 			}
 			if len(s.Entries) > 300 {
@@ -261,7 +265,7 @@ func (l *Logger) Snapshot() (Snapshot, error) {
 		b, e := io.ReadAll(io.LimitReader(f, maxReadBytes+1))
 		f.Close()
 		if e == nil && len(b) > 0 {
-			s.CrashText = append(s.CrashText, CrashText{At: info.ModTime().UTC(), Text: strings.ToValidUTF8(string(b[:min(len(b), maxReadBytes)]), "�"), Truncated: len(b) > maxReadBytes})
+			s.CrashText = append(s.CrashText, CrashText{ID: filepath.Base(path), At: info.ModTime().UTC(), Text: strings.ToValidUTF8(string(b[:min(len(b), maxReadBytes)]), "�"), Truncated: len(b) > maxReadBytes})
 		}
 	}
 	return s, nil
@@ -276,6 +280,7 @@ func Read() (Snapshot, error) {
 		return s, err
 	}
 	s.Crashes, s.SystemNote = systemCrashes()
+	s.Crashes = l.visibleSystemCrashes(s.Crashes)
 	return s, nil
 }
 func (l *Logger) Close() error {

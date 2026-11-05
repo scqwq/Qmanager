@@ -3,6 +3,7 @@ package cloud123
 import (
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -52,15 +53,122 @@ func (s *Service) StartUpload(parent, ticket string) error {
 		return errors.New("文件选择已过期，请重新选择文件")
 	}
 	delete(s.files, ticket)
+	s.startUploadLocked(c, id, chosen.info.Name(), chosen.info.Size(), func(context.Context) (chosenFile, func(), error) {
+		return chosen, nil, nil
+	}, nil)
+	return nil
+}
+
+type UploadReceipt struct {
+	AccountID string
+	FileID    string
+	MD5       string
+	Size      int64
+}
+
+// StartBackupUpload uses a registry-bound preparation callback. Only this path
+// can upload an independently verified, app-generated temporary ZIP.
+func (s *Service) StartBackupUpload(parent, name string, prepare func(context.Context) (string, os.FileInfo, func(), error), finish func(UploadReceipt, error) error) error {
+	if !s.operation.TryLock() {
+		return errors.New("请等待当前云盘操作结束")
+	}
+	defer s.operation.Unlock()
+	c, err := s.getClient()
+	if err != nil {
+		return err
+	}
+	id, err := parseID(parent)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeLocked() || s.client != c || !s.status.LoggedIn {
+		return errors.New("云盘登录状态或上传任务已变化")
+	}
+	if !s.folders[parent] {
+		return errors.New("请重新选择云端目录")
+	}
+	s.startUploadLocked(c, id, name, 0, func(ctx context.Context) (chosenFile, func(), error) {
+		path, info, cleanup, e := prepare(ctx)
+		if e == nil && (info == nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 100<<30 || !validName(info.Name())) {
+			e = errors.New("备份 ZIP 名称或大小超出上传范围")
+		}
+		return chosenFile{path: path, info: info}, cleanup, e
+	}, finish)
+	return nil
+}
+
+func accountKey(uid string) string {
+	sum := sha256.Sum256([]byte("qman/123-account/" + uid))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Service) CheckBackupObject(ctx context.Context, receipt UploadReceipt) (state, detail string) {
+	c, err := s.getClient()
+	if err != nil {
+		return "unknown", "请登录上传时使用的账号后刷新"
+	}
+	s.mu.RLock()
+	matches := s.client == c && accountKey(s.uid) == receipt.AccountID
+	s.mu.RUnlock()
+	if !matches {
+		return "unknown", "当前账号与上传时的账号不同"
+	}
+	id, err := parseID(receipt.FileID)
+	if err != nil || id <= 0 {
+		return "unknown", "云端文件编号无法核实"
+	}
+	file, err := c.info(ctx, id)
+	if err != nil {
+		s.handle(c, err)
+		var business *apiError
+		if errors.As(err, &business) && (business.message == "文件不存在" || business.message == "该文件不存在") {
+			return "missing", "云盘确认原文件不存在"
+		}
+		return "unknown", safeMessage(err.Error())
+	}
+	s.mu.RLock()
+	matches = s.status.LoggedIn && s.client == c && accountKey(s.uid) == receipt.AccountID
+	s.mu.RUnlock()
+	if !matches {
+		return "unknown", "核对期间云盘登录状态发生变化"
+	}
+	if file.Trashed {
+		return "missing", "原文件已移入云盘回收站"
+	}
+	if file.Type != 0 || file.Size != receipt.Size || !strings.EqualFold(file.MD5, receipt.MD5) {
+		return "changed", "云端对象的大小或 MD5 与上传记录不同"
+	}
+	return "present", "云端文件编号、大小与 MD5 核对一致"
+}
+
+func (s *Service) startUploadLocked(c *Client, id int64, name string, total int64, prepare func(context.Context) (chosenFile, func(), error), finish func(UploadReceipt, error) error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	s.done = make(chan struct{})
 	done := s.done
-	s.status.Upload = UploadStatus{ID: randomID(), Phase: "checking", Name: chosen.info.Name(), Total: chosen.info.Size()}
+	s.status.Upload = UploadStatus{ID: randomID(), Phase: "checking", Name: name, Total: total}
+	account := accountKey(s.uid)
 	go func() {
 		defer close(done)
 		defer cancel()
-		file, e := s.upload(ctx, c, id, chosen)
+		chosen, cleanup, e := prepare(ctx)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		var file remoteFile
+		if e == nil {
+			s.mu.Lock()
+			s.status.Upload.Total = chosen.info.Size()
+			s.status.Upload.Name = chosen.info.Name()
+			s.mu.Unlock()
+			file, e = s.upload(ctx, c, id, chosen)
+		}
+		if finish != nil {
+			receipt := UploadReceipt{AccountID: account, FileID: strconv.FormatInt(file.ID, 10), MD5: file.MD5, Size: file.Size}
+			e = errors.Join(e, finish(receipt, e))
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.cancel = nil
@@ -87,7 +195,6 @@ func (s *Service) StartUpload(parent, ticket string) error {
 		s.status.Upload.RemoteID = strconv.FormatInt(file.ID, 10)
 		s.status.Upload.Detail = "上传完成，大小和MD5核对一致"
 	}()
-	return nil
 }
 func (s *Service) CancelUpload() {
 	s.mu.RLock()

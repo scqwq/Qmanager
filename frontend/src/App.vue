@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import {computed,onMounted,onUnmounted,reactive,ref,watch} from 'vue'
+import {computed,nextTick,onMounted,onUnmounted,reactive,ref,watch} from 'vue'
 import {api,hasDesktop,type Item,type Page,type State,type Bucket,type BackupPreview,type History,type Filter} from './api'
 import BackupHistory from './components/BackupHistory.vue'
+import LogsPage from './components/LogsPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import BackupExportDialog from './components/BackupExportDialog.vue'
 import BackupLoadDialog from './components/BackupLoadDialog.vue'
@@ -15,6 +16,8 @@ import SourceDetails from './components/SourceDetails.vue'
 import LibraryStatus from './components/LibraryStatus.vue'
 import AppearanceBackground from './components/AppearanceBackground.vue'
 const historyPage=ref(false),exportFilter=ref<Filter|null>(null),loadPreview=ref<BackupPreview|null>(null)
+const historyLogID=ref('')
+let historyScroll=0
 const settingsPage=ref(false)
 const state=ref<State>({phase:'idle',mode:'source',source:null,sources:[],scanned:0,bytes:0,report:null,watching:false,coverage:'',revision:0,error:'',message:'',backup:null,excluded:0,cached:false,last_full_scan:'',reconcile_seconds:120,index_bytes:0})
 const page=ref<Page>({items:[],total:0,bytes:0,baseline_files:0}),buckets=ref<Bucket[]>([])
@@ -29,6 +32,7 @@ let timer:ReturnType<typeof setInterval>|undefined,polling=false,generation=0,di
 const busy=computed(()=>action.value||['preparing_backup','backup','verifying','discovering','restoring','deleting','preparing_delete','recycling'].includes(state.value.phase))
 const scanning=computed(()=>state.value.phase==='scanning')
 const currentPage=computed<FeedbackPage>(()=>settingsPage.value?'settings':historyPage.value?'history':'media')
+const pendingBackupLoad=ref<{page:FeedbackPage;revision:number}|null>(null)
 const feedback=useFeedback(state,error,currentPage)
 const progressTitle=computed(()=>libraryStatus(state.value).title)
 const restoreIssues=computed(()=>state.value.restore?.placements.filter(p=>p.error)??[])
@@ -74,12 +78,34 @@ async function terminateUpdate(){stopping.value=true;try{await run(()=>api().Sto
 const cancel=()=>run(()=>api().CancelScan())
 const openBackup=(expectedID='')=>run(async()=>{const preview=await api().ChooseBackup(expectedID);if(preview)loadPreview.value=preview})
 const loadHistory=(id:string)=>run(async()=>{loadPreview.value=await api().PreviewHistoryBackup(id)})
-const viewLoaded=(id:string)=>run(async()=>{await api().ViewLoadedBackup(id);settingsPage.value=false;historyPage.value=false;year.value='';failed.value=new Set();selected.value=null;view.value='source';month.value='';from.value='';to.value='';offset.value=0})
+function enterBackupView(){
+ settingsPage.value=false;historyPage.value=false;year.value='';failed.value=new Set();selected.value=null;view.value='source';month.value='';from.value='';to.value='';offset.value=0
+}
+const viewLoaded=(id:string)=>run(async()=>{await api().ViewLoadedBackup(id);enterBackupView()})
 const removeBackups=(ids:string[])=>run(()=>api().DeleteBackups(ids))
 const forgetBackup=(id:string)=>run(()=>api().DeleteBackupHistory(id))
-const checkBackupOriginals=(id:string)=>run(()=>api().CheckBackupOriginals(id))
+async function openBackupOperations(id:string){
+ historyScroll=window.scrollY
+ historyLogID.value=id
+ await nextTick()
+ window.scrollTo(0,0)
+}
+async function closeBackupOperations(){
+ historyLogID.value=''
+ await nextTick()
+ window.scrollTo(0,historyScroll)
+}
 const importedDefault=()=>run(async()=>{settingsPage.value=false;historyPage.value=false;year.value='';month.value='';offset.value=0;failed.value=new Set();selected.value=null})
-async function confirmLoad(id:string,target:string){loadPreview.value=null;await run(async()=>{await api().LoadBackup(id,target);settingsPage.value=false;historyPage.value=false;year.value='';failed.value=new Set();selected.value=null;view.value='source';month.value='';from.value='';to.value='';offset.value=0})}
+async function confirmLoad(id:string,target:string){
+ const ticket=loadPreview.value?.ticket
+ const origin={page:currentPage.value,revision:state.value.revision}
+ loadPreview.value=null
+ await run(async()=>{
+  if(ticket)await api().LoadSelectedBackup(ticket,target)
+  else await api().LoadBackup(id,target)
+  pendingBackupLoad.value=origin
+ })
+}
 const switchSource=(event:Event)=>{const id=(event.target as HTMLSelectElement).value;if(id)void run(async()=>{await api().SwitchSource(id);settingsPage.value=false;historyPage.value=false;year.value='';failed.value=new Set();selected.value=null;month.value='';offset.value=0})}
 const backupError=ref(''),backupSubmitting=ref(false)
 function prepareBackup(){backupError.value='';exportFilter.value={...filter(),offset:0}}
@@ -91,6 +117,13 @@ async function inspect(item:Item){selected.value=item;mediaURL.value='';playErro
 function closeDetail(){selected.value=null;mediaURL.value='';history.value=[]}
 function onKey(e:KeyboardEvent){if(e.key==='Escape'){closeDetail();manager.dialog=null;if(!backupSubmitting.value)exportFilter.value=null;loadPreview.value=null}}
 watch(()=>state.value.revision,()=>{failed.value=new Set()})
+watch([()=>state.value.revision,pendingBackupLoad],()=>{
+ const pending=pendingBackupLoad.value
+ if(!pending||state.value.phase!=='ready'||state.value.revision===pending.revision)return
+ pendingBackupLoad.value=null
+ if(!state.value.error&&state.value.mode==='backup'&&currentPage.value===pending.page)enterBackupView()
+})
+watch(historyPage,value=>{if(!value)historyLogID.value=''})
 watch([year,kind,month,role,status,size,view,from,to,includeBaseline],()=>{offset.value=0;if(desktop.value)void load()})
 watch(view,()=>{year.value='';month.value='';from.value='';to.value=''})
 watch([from,to],()=>{if(view.value==='observed'&&(from.value||to.value)){month.value='';year.value=''}})
@@ -131,7 +164,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
    </div>
   </template>
   <button class="nav-item settings-nav" :class="{active:settingsPage}" :disabled="!desktop" @click="settingsPage=true;historyPage=false">设置</button>
-  <div class="sidebar-footer">本机处理 <span>0.7.1</span></div>
+  <div class="sidebar-footer">本机处理 <span>0.8.0</span></div>
  </aside>
  <main>
   <header class="topbar">
@@ -143,7 +176,8 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
    <SettingsPage v-if="settingsPage" :busy="busy" :records-message="recordsMessage" :records-error="recordsError" @imported="importedDefault" @export-records="exportIndex"/>
    <div v-else-if="historyPage">
     <div v-if="busy" class="scan-progress" role="status">{{progressTitle}} · 已处理 {{state.scanned}} 项<button v-if="scanning" :disabled="stopping||state.stopping" @click="terminateUpdate">{{stopping||state.stopping?'正在终止…':'终止更新'}}</button><button v-else @click="cancel">取消任务</button></div>
-    <BackupHistory :busy="busy" @load="loadHistory" @relocate="openBackup" @view="viewLoaded" @remove="removeBackups" @forget="forgetBackup" @check="checkBackupOriginals" @clean="manager.prepareBackups" @clean-results="manager.results"/>
+    <BackupHistory v-show="!historyLogID" :busy="busy" @load="loadHistory" @relocate="openBackup" @view="viewLoaded" @remove="removeBackups" @forget="forgetBackup" @operations="openBackupOperations" @clean="manager.prepareBackups" @clean-results="manager.results"/>
+    <LogsPage v-if="historyLogID" :backup-id="historyLogID" @back="closeBackupOperations"/>
    </div>
    <template v-else>
     <div v-if="!desktop" class="notice">请使用 Qman 桌面程序管理本地媒体。浏览器预览不读取本机目录。</div>

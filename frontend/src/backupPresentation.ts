@@ -1,4 +1,4 @@
-import type {BackupRecord} from './api'
+import type {BackupPresenceKey,BackupRecord} from './api'
 
 export function hasTime(value?:string){return !!value&&!value.startsWith('0001-')&&!Number.isNaN(Date.parse(value))}
 export const fmtTime=(value?:string)=>hasTime(value)?new Date(value!).toLocaleString():'时间未知'
@@ -7,9 +7,7 @@ export interface Presence {symbol:string;tone:string;description:string}
 export function packagePresence(row:BackupRecord):Presence {
  const checked=`位置检查：${fmtTime(row.location_checked_at)}。`
  switch(row.local_state){
-  case 'present': return row.status==='deleted'
-   ?{symbol:'!',tone:'warning',description:`登记位置重新出现，需要重新校验。${checked}`}
-   :{symbol:'√',tone:'success',description:`登记位置存在，仅检查位置，尚未校验包内内容。${checked}`}
+  case 'present': return {symbol:'√',tone:'success',description:`登记位置存在，仅检查位置，尚未校验包内内容。${checked}`}
   case 'missing':return {symbol:'×',tone:'muted',description:`登记位置未找到，直接父目录可访问；不搜索移走的副本。${checked}`}
   case 'unavailable':return {symbol:'?',tone:'warning',description:`位置暂不可访问，可能断盘或权限不足，不能判定丢失。${checked}`}
   case 'changed':return {symbol:'!',tone:'error',description:`登记位置的对象类型发生变化，需要核对。${checked}`}
@@ -20,7 +18,7 @@ export function packagePresence(row:BackupRecord):Presence {
 
 export function originalPresence(row:BackupRecord):Presence {
  const result=row.original_files
- if(!result)return {symbol:'—',tone:'muted',description:'尚未检查本地源文件。点击“核对原文件”按这份备份的清单检查。'}
+ if(!result)return {symbol:'—',tone:'muted',description:'正在等待核对本地源文件。'}
  const detail=`上次检查：${fmtTime(result.checked_at)}。存在 ${result.present}，未找到 ${result.missing}，大小/类型变化 ${result.changed}，未知 ${result.unknown}。仅路径与大小检查，不校验内容。`
  if(result.stale)return {symbol:'?',tone:'warning',description:`操作后需重新检查，旧结果不代表当前状态。${detail}`}
  switch(result.state){
@@ -30,6 +28,25 @@ export function originalPresence(row:BackupRecord):Presence {
   case 'empty':return {symbol:'—',tone:'muted',description:'这份备份没有已成功备份的源文件条目。'}
   case 'unlinked':return {symbol:'?',tone:'warning',description:'未关联本机原来源，不能判断源文件是否存在。'}
   default:return {symbol:'?',tone:'warning',description:`部分或全部无法检查，不能当作文件缺失。${detail}`}
+ }
+}
+
+export const presenceLabels:Record<BackupPresenceKey,string>={package:'备份包',original:'本地源文件',cloud:'云盘文件'}
+export const presenceKeys:BackupPresenceKey[]=['package','original','cloud']
+
+export function backupPresence(row:BackupRecord,key:BackupPresenceKey):Presence {
+ const cloud=row.display?.cloud
+ const cloudSymbols:Record<string,[string,string]>={present:['√','success'],missing:['×','muted'],changed:['!','warning'],unknown:['?','warning']}
+ const [symbol,tone]=cloudSymbols[cloud?.state??'']??['—','muted']
+ const observed=key==='package'?packagePresence(row):key==='original'?originalPresence(row):{
+  symbol,tone,description:cloud?`${cloud.detail}。${fmtTime(cloud.checked_at)}`:'没有此备份的 Qman 上传记录。'
+ }
+ const mark=row.display?.marks?.[key]
+ if(!mark)return observed
+ return {
+  symbol:mark.state==='present'?'√':'×',
+  tone:mark.state==='present'?'success':'muted',
+  description:`手动标注 · ${fmtTime(mark.at)}。实际核对 ${observed.symbol} · ${observed.description}`
  }
 }
 

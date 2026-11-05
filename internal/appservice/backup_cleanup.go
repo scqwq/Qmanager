@@ -199,6 +199,9 @@ func (s *Media) recordBackupSourceCleanup(job catalog.CleanupJob) error {
 		if err = s.catalog.SaveBackup(row); err != nil {
 			return err
 		}
+		if job.State != "preparing" && job.State != "running" {
+			s.backupEvent(row, "源文件回收", detail)
+		}
 	}
 	return nil
 }

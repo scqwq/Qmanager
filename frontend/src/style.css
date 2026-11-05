@@ -209,14 +209,24 @@ main { margin-left: 224px; min-width: 0; }
 .history-batch-actions > span { margin-right: auto; }
 .history-batch-actions button { font-size: 14px; }
 .history-table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
-.history-table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 14px; text-align: left; line-height: 1.8; }
+.history-table { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 14px; text-align: left; line-height: 1.8; }
 .history-table th { padding: 16px; background: var(--panel-soft); font-weight: 600; color: var(--accent-text); }
-.history-table td { padding: 22px 16px; border-top: 1px solid var(--line); vertical-align: top; }
+.history-table td { padding: 16px; border-top: 1px solid var(--line); vertical-align: top; }
 .history-table th:first-child, .history-table td:first-child { width: 40px; padding-right: 0; }
 .history-table td:nth-child(2) { min-width: 190px; max-width: 250px; }
 .history-table td:nth-child(2) > strong { font-size: 16px; font-weight: 600; }
 .history-table p { margin: 8px 0 0; }
 .history-table small { color: var(--muted); }
+@media(max-width:700px) {
+ .history-table, .history-table thead, .history-table tbody { display: block; min-width: 0; }
+ .history-table tr { display: grid; grid-template-columns: 26px minmax(0,1fr); gap: 0 8px; padding: 10px 14px; }
+ .history-table tbody tr { border-top: 1px solid var(--line); }
+ .history-table thead tr { background: var(--panel-soft); }
+ .history-table th, .history-table td { border: 0; padding: 4px 0; min-width: 0; }
+ .history-table td:nth-child(2) { min-width: 0; max-width: none; overflow-wrap: anywhere; }
+ .history-table th:nth-child(n+3) { display: none; }
+ .history-table td:nth-child(n+3) { grid-column: 2; }
+}
 .backup-status-cell { min-width: 410px; max-width: 460px; }
 .backup-status-grid { display: grid; grid-template-columns: minmax(105px, .9fr) minmax(130px, 1fr) minmax(140px, 1fr); gap: 18px; }
 .backup-status-block { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
@@ -437,6 +447,24 @@ main { margin-left: 224px; min-width: 0; }
 .log-entries { list-style: none; margin: 20px 0 0; padding: 0; max-height: 65vh; overflow: auto; }
 .log-entries li { display: flex; gap: 24px; padding: 18px 0; border-bottom: 1px solid var(--line); font-size: 14px; line-height: 1.8; }
 .log-entries time { flex: 0 0 170px; color: var(--muted); }
+.presence-heading, .record-line { display: flex; align-items: center; gap: 8px; }
+.presence-heading { margin-bottom: 4px; white-space: nowrap; }
+.presence-action { min-width: 32px; min-height: 32px; padding: 2px 6px; font-size: 20px; line-height: 1; }
+.record-line { justify-content: space-between; }
+.logs-section > summary { font-size: 16px; font-weight: 600; cursor: pointer; }
+.record-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 16px 0; }
+.record-filters label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+.record-filters input, .record-filters select { min-height: 36px; max-width: 100%; }
+.record-pager { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 16px; font-size: 14px; }
+.backup-log-choices { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+.backup-log-choices button { min-width: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.backup-log-choices button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent-text); }
+.backup-log-choices span { display: block; font-size: 14px; color: var(--muted); }
+.backup-log-detail { margin-top: 24px; }
+.backup-log-detail .log-entries p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.backup-log-summary { margin-top: 16px; font-size: 14px; overflow-wrap: anywhere; }
+@media(max-width:700px) { .backup-log-choices { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media(max-width:420px) { .backup-log-choices { grid-template-columns: minmax(0,1fr); } }
 .log-entry-copy { min-width: 0; overflow-wrap: anywhere; }
 .log-entry-copy p { margin: 0; }
 .log-entry-copy details { margin-top: 6px; color: var(--muted); }

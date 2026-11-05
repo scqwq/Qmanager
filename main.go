@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"encoding/json"
@@ -23,16 +24,26 @@ import (
 	"qqarchive/internal/mediabackup"
 	"qqarchive/internal/storage"
 	"strings"
+	"sync"
+	"time"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
 
 type App struct {
-	ctx     context.Context
-	media   *appservice.Media
-	private string
-	cloud   *cloud123.Service
+	ctx          context.Context
+	media        *appservice.Media
+	private      string
+	cloud        *cloud123.Service
+	backupPickMu sync.Mutex
+	backupPick   *backupPick
+}
+
+type backupPick struct {
+	ticket  string
+	row     catalog.BackupRecord
+	expires time.Time
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -132,8 +143,11 @@ func (a *App) CreateBackupWithFormat(f media.Filter, format string) error {
 	}
 	return a.media.BackupFormat(a.ctx, path, f, format)
 }
-func (a *App) GetSettings() (appservice.PathSettings, error)         { return a.media.Settings() }
-func (a *App) GetDiagnostics() (diagnostics.Snapshot, error)         { return diagnostics.Read() }
+func (a *App) GetSettings() (appservice.PathSettings, error) { return a.media.Settings() }
+func (a *App) GetDiagnostics() (diagnostics.Snapshot, error) { return diagnostics.Read() }
+func (a *App) EditDiagnosticRecord(kind, id string) error {
+	return diagnostics.EditRecord(kind, id)
+}
 func (a *App) GetAppearance() (appservice.AppearanceSettings, error) { return a.media.Appearance() }
 func (a *App) SaveAppearance(settings appservice.AppearanceSettings) (appservice.AppearanceSettings, error) {
 	return a.media.SaveAppearance(settings)
@@ -202,8 +216,14 @@ func (a *App) dialogDirectory(key string) string {
 	}
 	return ""
 }
-func (a *App) GetBackupHistory() ([]catalog.BackupRecord, error) { return a.media.Backups() }
-func (a *App) CheckBackupOriginals(id string) error              { return a.media.CheckBackupOriginals(a.ctx, id) }
+func (a *App) GetBackupHistory() ([]catalog.BackupRecord, error) {
+	rows, err := a.media.Backups()
+	for i := range rows {
+		rows[i].Display = publicBackupDisplay(rows[i].Display)
+	}
+	return rows, err
+}
+func (a *App) CheckBackupOriginals(id string) error { return a.media.CheckBackupOriginals(a.ctx, id) }
 func (a *App) ChooseBackup(expectedID string) (*appservice.BackupPreview, error) {
 	choice, err := runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{Type: runtime.QuestionDialog, Title: "加载备份", Message: "请选择备份保存形式", Buttons: []string{"备份文件夹", "ZIP 文件", "取消"}, DefaultButton: "备份文件夹", CancelButton: "取消"})
 	if err != nil || choice == "取消" || choice == "" {
@@ -218,13 +238,19 @@ func (a *App) ChooseBackup(expectedID string) (*appservice.BackupPreview, error)
 	if err != nil || path == "" {
 		return nil, err
 	}
-	preview, err := a.media.PreviewBackup(a.ctx, path, expectedID)
+	preview, err := a.media.PreviewExternalBackup(a.ctx, path, expectedID)
 	if err != nil {
 		return nil, err
 	}
 	if expectedID != "" && preview.Record.ID != expectedID {
 		return nil, fmt.Errorf("所选备份编号与历史不符，未替换原记录")
 	}
+	preview.Ticket = rand.Text()
+	row := preview.Record
+	row.Manifest = ""
+	a.backupPickMu.Lock()
+	a.backupPick = &backupPick{ticket: preview.Ticket, row: row, expires: time.Now().Add(15 * time.Minute)}
+	a.backupPickMu.Unlock()
 	return &preview, nil
 }
 func (a *App) PreviewHistoryBackup(id string) (appservice.BackupPreview, error) {
@@ -241,7 +267,18 @@ func (a *App) ChooseRestoreTarget() (string, error) {
 	}
 	return a.media.RememberSourceDirectory(path, true)
 }
-func (a *App) LoadBackup(id, target string) error  { return a.media.RestoreBackup(a.ctx, id, target) }
+func (a *App) LoadBackup(id, target string) error { return a.media.RestoreBackup(a.ctx, id, target) }
+func (a *App) LoadSelectedBackup(ticket, target string) error {
+	a.backupPickMu.Lock()
+	pick := a.backupPick
+	if pick == nil || pick.ticket != ticket || time.Now().After(pick.expires) {
+		a.backupPickMu.Unlock()
+		return fmt.Errorf("所选备份已过期，请重新选择")
+	}
+	a.backupPick = nil
+	a.backupPickMu.Unlock()
+	return a.media.RestoreExternalBackup(a.ctx, pick.row, target)
+}
 func (a *App) ViewLoadedBackup(id string) error    { return a.media.ViewLoadedBackup(a.ctx, id) }
 func (a *App) DeleteBackups(ids []string) error    { return a.media.DeleteBackups(a.ctx, ids) }
 func (a *App) DeleteBackupHistory(id string) error { return a.media.DeleteBackupHistory(a.ctx, id) }
@@ -286,7 +323,7 @@ func startDiagnostics(private string) {
 		if e = logger.EnableCrashOutput(); e != nil {
 			logger.Record(context.Background(), "warning", "crash.capture_unavailable", "Go 崩溃详情记录未能启用")
 		}
-		logger.Record(context.Background(), "info", "app.start", "Qman 0.7.1 / diagnostics-1 启动")
+		logger.Record(context.Background(), "info", "app.start", "Qman 0.8.0 / diagnostics-1 启动")
 	}
 }
 func main() {

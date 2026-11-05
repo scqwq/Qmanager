@@ -206,6 +206,11 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 	return &Package{Manifest: m, Items: items, Bytes: b, Root: root, Cleanup: cleanup, MetadataBytes: meta}, nil
 }
 func ZipDirectory(ctx context.Context, path string) (string, error) {
+	return ZipDirectoryTo(ctx, path, path+".zip")
+}
+
+// ZipDirectoryTo writes an independently verified ZIP to the selected destination.
+func ZipDirectoryTo(ctx context.Context, path, target string) (string, error) {
 	m, _, err := Open(ctx, path, nil)
 	if err != nil {
 		return "", err
@@ -214,7 +219,7 @@ func ZipDirectory(ctx context.Context, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	parent := filepath.Dir(path)
+	parent := filepath.Dir(target)
 	out, err := os.CreateTemp(parent, ".qman-zip-*.partial")
 	if err != nil {
 		return "", err
@@ -260,7 +265,6 @@ func ZipDirectory(ctx context.Context, path string) (string, error) {
 	if err = ctx.Err(); err != nil {
 		return "", err
 	}
-	target := path + ".zip"
 	if err = storage.Publish(stage, target); err != nil {
 		return "", err
 	}

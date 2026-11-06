@@ -22,6 +22,8 @@ type Package struct {
 	MetadataBytes int64
 }
 
+var ErrPackageSpace = errors.New("ZIP校验暂存空间不足")
+
 func OpenPackage(ctx context.Context, path, temporary string, progress func(int, int64)) (*Package, error) {
 	path, err := media.Canonical(path)
 	if err != nil {
@@ -89,7 +91,7 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 		}
 		free, e := storage.Free(temporary)
 		if e != nil || free < total {
-			return nil, errors.New("ZIP校验暂存空间不足")
+			return nil, ErrPackageSpace
 		}
 		root, e = os.MkdirTemp(temporary, ".qman-media-stage-unpack-")
 		if e != nil {

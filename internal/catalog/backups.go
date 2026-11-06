@@ -11,7 +11,16 @@ import (
 	"time"
 )
 
+type BackupPackageCheck struct {
+	Path       string    `json:"path"`
+	DeletePath string    `json:"delete_path,omitempty"`
+	State      string    `json:"state"`
+	Detail     string    `json:"detail"`
+	At         time.Time `json:"at"`
+}
+
 type BackupRecord struct {
+	PackageCheck        *BackupPackageCheck  `json:"-"`
 	SelectedOnly        bool                 `json:"selected_only,omitempty"`
 	Display             BackupDisplay        `json:"display"`
 	HasLoaded           bool                 `json:"has_loaded"`
@@ -82,9 +91,10 @@ CREATE INDEX IF NOT EXISTS backup_events_by_backup ON backup_events(backup_id,di
 }
 
 type storedBackup struct {
-	Record     BackupRecord `json:"record"`
-	Manifest   string       `json:"manifest"`
-	DeletePath string       `json:"delete_path"`
+	PackageCheck *BackupPackageCheck `json:"package_check,omitempty"`
+	Record       BackupRecord        `json:"record"`
+	Manifest     string              `json:"manifest"`
+	DeletePath   string              `json:"delete_path"`
 }
 
 func (c *Catalog) Backup(id string) (BackupRecord, error) {
@@ -94,11 +104,12 @@ func (c *Catalog) Backup(id string) (BackupRecord, error) {
 	if err == nil {
 		err = json.Unmarshal([]byte(payload), &row)
 	}
-	row.Record.Manifest, row.Record.DeletePath = row.Manifest, row.DeletePath
+	row.Record.Manifest, row.Record.DeletePath, row.Record.PackageCheck = row.Manifest, row.DeletePath, row.PackageCheck
 	return row.Record, err
 }
 func (c *Catalog) Backups() ([]BackupRecord, error) {
 	rows, err := c.db.Query(`SELECT json_extract(r.payload,'$.record'),
+        COALESCE(json_extract(r.payload,'$.delete_path'),''),COALESCE(json_extract(r.payload,'$.package_check'),'null'),
 		EXISTS(SELECT 1 FROM backup_imports WHERE backup_imports.id=r.id),COALESCE(d.payload,'{}')
 		FROM backup_records r LEFT JOIN backup_display d ON d.id=r.id AND d.digest=json_extract(r.payload,'$.record.digest')
 		ORDER BY r.rowid DESC LIMIT 10001`)
@@ -108,13 +119,17 @@ func (c *Catalog) Backups() ([]BackupRecord, error) {
 	defer rows.Close()
 	out := []BackupRecord{}
 	for rows.Next() {
-		var payload, display string
+		var payload, display, deletePath, check string
 		var row BackupRecord
 		var imported bool
-		if err = rows.Scan(&payload, &imported, &display); err != nil {
+		if err = rows.Scan(&payload, &deletePath, &check, &imported, &display); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal([]byte(payload), &row); err != nil {
+			return nil, err
+		}
+		row.DeletePath = deletePath
+		if err = json.Unmarshal([]byte(check), &row.PackageCheck); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal([]byte(display), &row.Display); err != nil {
@@ -178,7 +193,7 @@ func (c *Catalog) SaveBackup(row BackupRecord) error {
 			return errors.New("备份历史达到上限")
 		}
 	}
-	b, err := json.Marshal(storedBackup{Record: row, Manifest: row.Manifest, DeletePath: row.DeletePath})
+	b, err := json.Marshal(storedBackup{Record: row, Manifest: row.Manifest, DeletePath: row.DeletePath, PackageCheck: row.PackageCheck})
 	if err != nil {
 		return err
 	}

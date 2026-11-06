@@ -2,7 +2,7 @@
 import {computed} from 'vue'
 import type {State} from '../api'
 import {libraryStatus} from '../libraryStatus'
-const props=defineProps<{state:State;busy:boolean;stopping:boolean}>()
+const props=defineProps<{state:State;busy:boolean;stopping:boolean;cancelling?:boolean}>()
 defineEmits<{update:[mode:string];stop:[];cancel:[]}>()
 const status=computed(()=>libraryStatus(props.state))
 const scanning=computed(()=>props.state.phase==='scanning')
@@ -24,7 +24,7 @@ const time=(v?:string)=>v&&!v.startsWith('0001-')?new Date(v).toLocaleString():'
     <button type="button" class="secondary" :disabled="busy||scanning" title="检查当前账号全部受支持类型和月份，不扫描其他账号或整块磁盘" @click="$emit('update','full')">全盘更新</button>
    </div>
   </div>
-  <button v-if="status.working&&!scanning" type="button" class="text-button status-cancel" @click="$emit('cancel')">取消当前任务</button>
+  <button v-if="status.working&&!scanning" type="button" class="text-button status-cancel" :disabled="cancelling" @click="$emit('cancel')">{{cancelling?'正在停止…':'取消当前任务'}}</button>
   <details v-if="state.report" class="library-status-details"><summary>盘点与检查详情<span v-if="state.mode==='source'"> · {{state.watching?'监控中':'监控已暂停'}}</span></summary>
    <p>来源合计 {{state.report.files.toLocaleString()}} 个文件 · 逻辑大小 {{bytes(state.report.bytes)}}</p>
    <div class="type-totals"><span v-for="item in totals" :key="item.kind">{{item.label}} {{item.files.toLocaleString()}} 个 · {{bytes(item.bytes)}}</span></div>

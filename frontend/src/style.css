@@ -520,3 +520,6 @@ main { margin-left: 224px; min-width: 0; }
 
 .settings-import-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .settings-field .directory-search-hint { display: inline; margin: 0; }
+
+.operation-prompt { max-width: 460px; }
+.operation-prompt > p { white-space: pre-line; }

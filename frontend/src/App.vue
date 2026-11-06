@@ -6,6 +6,7 @@ import LogsPage from './components/LogsPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import BackupExportDialog from './components/BackupExportDialog.vue'
 import BackupLoadDialog from './components/BackupLoadDialog.vue'
+import OperationPrompt from './components/OperationPrompt.vue'
 import MediaDeleteDialog from './components/MediaDeleteDialog.vue'
 import {useMediaManager} from './useMediaManager'
 import {useFeedback} from './useFeedback'
@@ -76,14 +77,54 @@ const choose=()=>run(async()=>{const path=await api().ChooseSource();if(path){se
 const start=(mode:string)=>run(async()=>{failed.value=new Set();await api().StartUpdate(mode)})
 const stopping=ref(false)
 async function terminateUpdate(){stopping.value=true;try{await run(()=>api().StopUpdate())}finally{stopping.value=false}}
-const cancel=()=>run(()=>api().CancelScan())
+const cancelling=ref(false)
+const prompt=ref<{title:string;message:string;confirm?:string;danger?:boolean}|null>(null)
+let resolvePrompt:((accepted:boolean)=>void)|undefined
+function closePrompt(accepted=false){
+ prompt.value=null
+ resolvePrompt?.(accepted)
+ resolvePrompt=undefined
+}
+async function confirmReminder(operation:string,path='',verb='继续'){
+ const kind=await api().OperationReminder(operation,path,false)
+ if(!kind)return true
+ const destination=kind==='desktop'?'桌面':kind==='drive_c'?'C 盘':''
+ const title=destination?`保存到${destination}？`:'确定要删除吗？'
+ const message=destination?path:kind==='source_delete'?'所选源文件将移入回收站。':'所选本地备份包将永久删除。'
+ const accepted=await new Promise<boolean>(resolve=>{
+  resolvePrompt=resolve
+  prompt.value={title,message,confirm:verb,danger:!destination}
+ })
+ if(accepted)await api().OperationReminder(operation,path,true)
+ return accepted
+}
+async function cancel(){
+ if(cancelling.value)return
+ const {phase,revision}=state.value
+ if(!['exporting','preparing_backup','backup','deleting','preparing_delete','recycling'].includes(phase)){
+  await run(()=>api().CancelScan())
+  return
+ }
+ cancelling.value=true
+ await run(async()=>{
+  const message=await api().CancelOperation(phase,revision)
+  if(message)prompt.value={title:'任务已停止',message}
+ })
+ cancelling.value=false
+}
+async function executeDelete(id:string){
+ action.value=true
+ try{if(await confirmReminder('source_delete','','删除'))await manager.execute(id)}
+ catch(e){error.value=String(e)}
+ finally{action.value=false}
+}
 const openBackup=(expectedID='')=>run(async()=>{const preview=await api().ChooseBackup(expectedID);if(preview)loadPreview.value=preview})
 const loadHistory=(id:string)=>run(async()=>{loadPreview.value=await api().PreviewHistoryBackup(id)})
 function enterBackupView(){
  settingsPage.value=false;historyPage.value=false;year.value='';failed.value=new Set();selected.value=null;view.value='source';month.value='';from.value='';to.value='';offset.value=0
 }
 const viewLoaded=(id:string)=>run(async()=>{await api().ViewLoadedBackup(id);enterBackupView()})
-const removeBackups=(ids:string[])=>run(()=>api().DeleteBackups(ids))
+const removeBackups=(ids:string[])=>run(async()=>{if(await confirmReminder('backup_delete','','永久删除'))await api().DeleteBackups(ids)})
 const forgetBackup=(id:string)=>run(()=>api().DeleteBackupHistory(id))
 async function openBackupOperations(id:string){
  historyScroll=window.scrollY
@@ -124,15 +165,18 @@ function prepareBackup(useSelection=false){
 }
 function exportSelected(){
  const request=manager.selection()
- return run(()=>api().ExportSelectedMedia(request))
+ return run(async()=>{
+  const path=await api().ChooseExportDestination()
+  if(path&&await confirmReminder('destination',path,'导出'))await api().ExportSelectedMediaAt(request,path)
+ })
 }
-async function backup(f:Filter,format:string,path:string){feedback.begin();backupSubmitting.value=true;action.value=true;backupError.value='';try{if(backupSelection.value)await api().CreateSelectedBackup(backupSelection.value,format,path);else await api().CreateBackupAt(f,format,path);exportFilter.value=null;state.value=await api().GetState();await load()}catch(e){backupError.value=String(e)}finally{backupSubmitting.value=false;action.value=false;feedback.accepted()}}
+async function backup(f:Filter,format:string,path:string){feedback.begin();backupSubmitting.value=true;action.value=true;backupError.value='';try{if(!await confirmReminder('destination',path,'备份'))return;if(backupSelection.value)await api().CreateSelectedBackup(backupSelection.value,format,path);else await api().CreateBackupAt(f,format,path);exportFilter.value=null;state.value=await api().GetState();await load()}catch(e){backupError.value=String(e)}finally{backupSubmitting.value=false;action.value=false;feedback.accepted()}}
 const recordsMessage=ref(''),recordsError=ref('')
 async function exportIndex(){action.value=true;recordsMessage.value='';recordsError.value='';try{const path=await api().ExportIndex();if(path)recordsMessage.value=`应用记录已备份：${path}`}catch(e){recordsError.value=String(e)}finally{action.value=false}}
 async function rename(name:string){await run(()=>api().RenameSource(name))}
 async function inspect(item:Item){selected.value=item;mediaURL.value='';playError.value=false;history.value=[];try{const h=await api().GetHistory(item.id);if(selected.value?.id===item.id)history.value=h}catch{};if(item.format==='iso-bmff'||item.preview){try{const url=await api().GetMediaURL(item.id);if(selected.value?.id===item.id)mediaURL.value=url}catch{playError.value=true}}}
 function closeDetail(){selected.value=null;mediaURL.value='';history.value=[]}
-function onKey(e:KeyboardEvent){if(e.key==='Escape'){closeDetail();manager.dialog=null;if(!backupSubmitting.value)exportFilter.value=null;loadPreview.value=null}}
+function onKey(e:KeyboardEvent){if(e.key==='Escape'){if(prompt.value){closePrompt();return};closeDetail();manager.dialog=null;if(!backupSubmitting.value)exportFilter.value=null;loadPreview.value=null}}
 watch(()=>state.value.revision,()=>{failed.value=new Set()})
 watch([()=>state.value.revision,pendingBackupLoad],()=>{
  const pending=pendingBackupLoad.value
@@ -182,7 +226,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
    </div>
   </template>
   <button class="nav-item settings-nav" :class="{active:settingsPage}" :disabled="!desktop" @click="settingsPage=true;historyPage=false">设置</button>
-  <div class="sidebar-footer">本机处理 <span>0.9.0</span></div>
+  <div class="sidebar-footer">本机处理 <span>0.9.1</span></div>
  </aside>
  <main>
   <header class="topbar">
@@ -193,7 +237,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
    <FeedbackNotice v-for="item in feedback.visible.value" :key="item.entry.id" :feedback="item.entry" dismissible @dismiss="feedback.dismiss(item.kind)"/>
    <SettingsPage v-if="settingsPage" :busy="busy" :records-message="recordsMessage" :records-error="recordsError" :cloud-login-from-backup="cloudLoginFromBackup" @imported="importedDefault" @export-records="exportIndex"/>
    <div v-else-if="historyPage">
-    <div v-if="busy" class="scan-progress" role="status">{{progressTitle}} · 已处理 {{state.scanned}} 项<button v-if="scanning" :disabled="stopping||state.stopping" @click="terminateUpdate">{{stopping||state.stopping?'正在终止…':'终止更新'}}</button><button v-else @click="cancel">取消任务</button></div>
+    <div v-if="busy" class="scan-progress" role="status">{{progressTitle}} · 已处理 {{state.scanned}} 项<button v-if="scanning" :disabled="stopping||state.stopping" @click="terminateUpdate">{{stopping||state.stopping?'正在终止…':'终止更新'}}</button><button v-else :disabled="cancelling" @click="cancel">{{cancelling?'正在停止…':'取消任务'}}</button></div>
     <BackupHistory v-show="!historyLogID" :busy="busy" @load="loadHistory" @relocate="openBackup" @view="viewLoaded" @remove="removeBackups" @forget="forgetBackup" @operations="openBackupOperations" @clean="manager.prepareBackups" @clean-results="manager.results" @cloud-login="openBackupCloudLogin"/>
     <LogsPage v-if="historyLogID" :backup-id="historyLogID" @back="closeBackupOperations"/>
    </div>
@@ -205,7 +249,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
     </section>
     <template v-else>
      <div v-if="state.discovery&&!state.discovery.complete" class="notice warning">有些文件夹未能检查，来源列表可能不完整。已找到 {{state.discovery.candidates.length}} 个来源，未扫描其他账号的媒体内容。</div>
-     <LibraryStatus :state="state" :busy="busy" :stopping="stopping" @update="start" @stop="terminateUpdate" @cancel="cancel"/>
+     <LibraryStatus :state="state" :busy="busy" :stopping="stopping" :cancelling="cancelling" @update="start" @stop="terminateUpdate" @cancel="cancel"/>
      <template v-if="state.report">
       <section class="library-panel">
        <div class="library-toolbar"><div class="tabs" aria-label="日期视图"><button :class="{active:view==='source'}" @click="view='source'">来源月份</button><button :class="{active:view==='observed'}" @click="view='observed'">新增发现日期</button></div><div v-if="state.mode==='source'" class="library-actions"><button class="secondary" :class="{chosen:manager.active}" :disabled="busy" @click="manager.toggle">{{manager.active?'完成管理':'管理'}}</button><button class="primary" :disabled="busy||manager.active" @click="prepareBackup()">备份当前筛选</button></div><span v-else class="backup-label">备份视图 · {{state.excluded}} 项未纳入当前清单</span></div>
@@ -233,7 +277,8 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
   </div>
  </main>
  <div v-if="selected" class="modal-backdrop" @click.self="closeDetail"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="媒体详情"><button class="close-modal" @click="closeDetail" aria-label="关闭详情">×</button><div class="detail-preview"><video v-if="mediaURL&&selected.format==='iso-bmff'&&!playError" :src="mediaURL" :poster="selected.cover_id&&!failed.has(selected.id)?thumb(selected):undefined" controls preload="metadata" @error="playError=true"></video><img v-else-if="mediaURL&&!playError" :src="mediaURL" alt="媒体预览" @error="playError=true"/><span v-else>{{playError?'此文件当前无法预览；可能缺少对应编码支持。':'此格式暂不支持内置预览，原文件已保留。'}}</span></div><h2>{{name(selected)}}</h2><dl><dt>源相对路径</dt><dd>{{selected.relative_path}}</dd><dt>类型 / 来源角色</dt><dd>{{kindName(selected.kind)}} / {{roles[selected.role]}}</dd><dt>来源月份</dt><dd>{{selected.source_month||'未知'}}</dd><dt>逻辑大小 / 格式</dt><dd>{{bytes(selected.bytes)}} / {{selected.format}} · {{statuses[selected.status]}}</dd><dt>首次发现</dt><dd>{{fmtTime(selected.first_seen_at)}} · {{methods[selected.observation_method]??'未知'}}</dd><dt>稳定性</dt><dd>{{selected.stability==='stable_heuristic'?'通过稳定性检查（启发式）':readiness(selected)||'状态未知'}}</dd><dt>稳定观察时间</dt><dd>{{fmtTime(selected.stable_observed_at)}}</dd><dt>文件系统创建时间</dt><dd>{{fmtTime(selected.fs_created_at)}}</dd><dt>文件系统修改时间</dt><dd>{{fmtTime(selected.fs_modified_at)}}</dd></dl><details v-if="history.length" class="history"><summary>查看已保存的观察记录（{{history.length}}）</summary><p v-for="(h,i) in history" :key="i">{{fmtTime(h.at)}} · {{eventNames[h.kind]??h.kind}}</p></details><p>首次发现是本工具的观察证据，不是 QQ 下载时间；稳定和文件头识别也不证明完整下载。原件、封面和临时文件分别管理。</p></section></div>
- <MediaDeleteDialog v-if="manager.dialog" :job="manager.dialog" :busy="busy" :read-only="manager.dialogReadOnly" @close="manager.dialog=null" @confirm="manager.execute"/><BackupExportDialog v-if="exportFilter" :initial="exportFilter" :selection="backupSelection" :submitting="backupSubmitting" :submit-error="backupError" :revision="state.revision" @close="exportFilter=null" @confirm="backup"/>
+ <MediaDeleteDialog v-if="manager.dialog" :job="manager.dialog" :busy="busy" :read-only="manager.dialogReadOnly" @close="manager.dialog=null" @confirm="executeDelete"/><BackupExportDialog v-if="exportFilter" :initial="exportFilter" :selection="backupSelection" :submitting="backupSubmitting" :submit-error="backupError" :revision="state.revision" @close="exportFilter=null" @confirm="backup"/>
+ <OperationPrompt v-if="prompt" v-bind="prompt" @close="closePrompt"/>
  <BackupLoadDialog v-if="loadPreview" :preview="loadPreview" @close="loadPreview=null" @confirm="confirmLoad"/>
 </div>
 </template>

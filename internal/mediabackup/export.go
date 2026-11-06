@@ -14,8 +14,7 @@ import (
 )
 
 // ExportFlat publishes ordinary files with no manifest or backup registration.
-func ExportFlat(ctx context.Context, target string, items []media.Item, excluded map[string]string, progress func(int, int64)) (Result, error) {
-	var result Result
+func ExportFlat(ctx context.Context, target string, items []media.Item, excluded map[string]string, progress func(int, int64)) (result Result, err error) {
 	plan := estimate(items, media.Filter{}, excluded)
 	if plan.Files == 0 {
 		return result, errors.New("没有可导出的文件：所选文件可能已变化、不可读或尚未稳定")
@@ -31,6 +30,7 @@ func ExportFlat(ctx context.Context, target string, items []media.Item, excluded
 	defer func() {
 		if result.Path == "" {
 			safeRemove(stage)
+			result.StagingRemainder = remainingStage(stage)
 		}
 	}()
 	if err = storage.Private(stage); err != nil {

@@ -108,8 +108,14 @@ func (a *App) ChooseSource() (string, error) {
 	result, err := a.media.Discover(a.ctx, path)
 	return result.Root, err
 }
-func (a *App) StartScan() error                  { return a.media.Start(a.ctx) }
-func (a *App) StartUpdate(mode string) error     { return a.media.StartUpdate(a.ctx, mode) }
+func (a *App) StartScan() error              { return a.media.Start(a.ctx) }
+func (a *App) StartUpdate(mode string) error { return a.media.StartUpdate(a.ctx, mode) }
+func (a *App) CancelOperation(phase string, revision int) string {
+	return a.media.CancelOperation(phase, revision)
+}
+func (a *App) OperationReminder(operation, path string, confirm bool) (string, error) {
+	return a.media.OperationReminder(operation, path, confirm)
+}
 func (a *App) CancelScan()                       { a.media.Cancel() }
 func (a *App) GetState() appservice.State        { return a.media.State() }
 func (a *App) GetPage(f media.Filter) media.Page { return a.media.Page(f) }
@@ -200,20 +206,23 @@ func (a *App) CreateSelectedBackup(request appservice.CleanupRequest, format, pa
 }
 
 func (a *App) ExportSelectedMedia(request appservice.CleanupRequest) error {
-	settings, err := a.media.Settings()
-	if err != nil {
+	path, err := a.ChooseExportDestination()
+	if err != nil || path == "" {
 		return err
 	}
-	path := settings.ExportDirectory
-	if path == "" {
-		path, err = runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择导出父目录", CanCreateDirectories: true})
-		if err != nil || path == "" {
-			return err
-		}
-	}
-	return a.media.ExportSelected(a.ctx, path, request)
+	return a.ExportSelectedMediaAt(request, path)
 }
 
+func (a *App) ChooseExportDestination() (string, error) {
+	settings, err := a.media.Settings()
+	if err != nil || settings.ExportDirectory != "" {
+		return settings.ExportDirectory, err
+	}
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择导出父目录", CanCreateDirectories: true})
+}
+func (a *App) ExportSelectedMediaAt(request appservice.CleanupRequest, path string) error {
+	return a.media.ExportSelected(a.ctx, path, request)
+}
 func (a *App) GetBackupDirectory() (string, error) { return a.media.BackupDirectory() }
 func (a *App) ChooseBackupDestination() (string, error) {
 	defaultPath, err := a.media.BackupDirectory()
@@ -350,7 +359,7 @@ func startDiagnostics(private string) {
 		if e = logger.EnableCrashOutput(); e != nil {
 			logger.Record(context.Background(), "warning", "crash.capture_unavailable", "Go 崩溃详情记录未能启用")
 		}
-		logger.Record(context.Background(), "info", "app.start", "Qman 0.9.0 / diagnostics-1 启动")
+		logger.Record(context.Background(), "info", "app.start", "Qman 0.9.1 / diagnostics-1 启动")
 	}
 }
 func main() {

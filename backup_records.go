@@ -31,9 +31,13 @@ func publicBackupDisplay(display catalog.BackupDisplay) catalog.BackupDisplay {
 }
 
 func (a *App) InspectBackupRecord(id string, explicit bool) (catalog.BackupRecord, error) {
-	ctx, cancel := context.WithTimeout(a.ctx, 45*time.Second)
+	timeout := 45 * time.Second
+	if explicit {
+		timeout = 2 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, timeout)
 	defer cancel()
-	row, err := a.media.InspectBackup(ctx, id)
+	row, err := a.media.InspectBackup(ctx, id, explicit)
 	if err != nil {
 		return row, err
 	}
@@ -47,6 +51,17 @@ func (a *App) InspectBackupRecord(id string, explicit bool) (catalog.BackupRecor
 			cloud.CheckedAt = time.Now().UTC()
 		}
 		row.Display, err = a.media.RecordBackupInspection(row, row.Display.Cloud)
+	}
+	row.Display = publicBackupDisplay(row.Display)
+	return row, err
+}
+
+func (a *App) InspectLocalBackupRecord(id string) (catalog.BackupRecord, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, 2*time.Minute)
+	defer cancel()
+	row, err := a.media.InspectBackup(ctx, id, true)
+	if err == nil {
+		row.Display, err = a.media.RecordBackupInspection(row, nil)
 	}
 	row.Display = publicBackupDisplay(row.Display)
 	return row, err

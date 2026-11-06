@@ -54,11 +54,12 @@ type Preview struct {
 	EstimatedPeak   int64          `json:"estimated_peak"`
 }
 type Result struct {
-	Path         string `json:"path"`
-	Files        int    `json:"files"`
-	PayloadFiles int    `json:"payload_files"`
-	Excluded     int    `json:"excluded"`
-	Bytes        int64  `json:"bytes"`
+	StagingRemainder string `json:"-"`
+	Path             string `json:"path"`
+	Files            int    `json:"files"`
+	PayloadFiles     int    `json:"payload_files"`
+	Excluded         int    `json:"excluded"`
+	Bytes            int64  `json:"bytes"`
 }
 
 func reason(item media.Item) string {
@@ -136,8 +137,7 @@ func DirectoryBudgetFor(entries int, bytes int64) int64 {
 	return bytes + reserve
 }
 
-func Build(ctx context.Context, source media.Source, items []media.Item, f media.Filter, parent string, protected []string, history func(string) ([]catalog.History, error), progress func(int, int64), options ...BuildOptions) (Result, error) {
-	var result Result
+func Build(ctx context.Context, source media.Source, items []media.Item, f media.Filter, parent string, protected []string, history func(string) ([]catalog.History, error), progress func(int, int64), options ...BuildOptions) (result Result, err error) {
 	if err := media.ValidateFilter(f); err != nil {
 		return result, err
 	}
@@ -176,6 +176,7 @@ func Build(ctx context.Context, source media.Source, items []media.Item, f media
 	defer func() {
 		if stage != "" {
 			safeRemove(stage)
+			result.StagingRemainder = remainingStage(stage)
 		}
 	}()
 	if err = storage.Private(stage); err != nil {
@@ -375,6 +376,13 @@ func Open(ctx context.Context, path string, progress func(int, int64)) (Manifest
 		return m, nil, err
 	}
 	return m, items, nil
+}
+
+func remainingStage(path string) string {
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		return path
+	}
+	return ""
 }
 
 // Only this job's fresh directory is cleaned, without following links.

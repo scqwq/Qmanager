@@ -25,6 +25,7 @@ import (
 )
 
 type State struct {
+	OperationResult  string                     `json:"-"`
 	CheckTotal       int                        `json:"check_total"`
 	CheckPass        int                        `json:"check_pass"`
 	CheckStage       string                     `json:"check_stage,omitempty"`
@@ -58,6 +59,7 @@ type State struct {
 	Discovery        *discovery.Result          `json:"discovery"`
 }
 type Media struct {
+	reminderMu               sync.Mutex
 	searchMu                 sync.Mutex
 	directorySearch          *directorySearchJob
 	directorySearchCancelled map[string]time.Time
@@ -528,6 +530,7 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 	s.jobDone = make(chan struct{})
 	done := s.jobDone
 	s.state.Phase = "preparing_backup"
+	s.state.OperationResult = ""
 	s.state.Message = ""
 	s.state.Error = ""
 	s.state.Backup = nil
@@ -598,6 +601,15 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 		s.state.Phase = "ready"
 		s.state.Revision++
 		s.state.CheckStage, s.state.CheckWaiting = "", false
+		if result.Path != "" {
+			s.state.OperationResult = fmt.Sprintf("已备份 %d 项。\n%s", result.Files, result.Path)
+			if format == "zip" && !strings.EqualFold(filepath.Ext(result.Path), ".zip") {
+				s.state.OperationResult = fmt.Sprintf("ZIP 未生成，已保留 %d 项的目录备份。\n%s", result.Files, result.Path)
+			}
+		}
+		if result.StagingRemainder != "" {
+			s.state.OperationResult = "本次未生成备份包。\n暂存可能仍占用空间：" + result.StagingRemainder
+		}
 		if summaryErr == nil {
 			s.state.Report = summary
 		}

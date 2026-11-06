@@ -5,13 +5,15 @@ export const fmtTime=(value?:string)=>hasTime(value)?new Date(value!).toLocaleSt
 export interface Presence {symbol:string;tone:string;description:string}
 
 export function packagePresence(row:BackupRecord):Presence {
- const checked=`位置检查：${fmtTime(row.location_checked_at)}。`
+ const checked=`检查时间：${fmtTime(row.location_checked_at)}。`
+ const detail=row.local_detail
  switch(row.local_state){
-  case 'present': return {symbol:'√',tone:'success',description:`登记位置存在，仅检查位置，尚未校验包内内容。${checked}`}
+  case 'present': return {symbol:'√',tone:'success',description:`${detail||'登记位置存在，仅检查位置。'} ${checked}`}
+  case 'damaged':return {symbol:'×',tone:'error',description:`${detail||'备份包不完整。'} ${checked}`}
   case 'missing':return {symbol:'×',tone:'muted',description:`登记位置未找到，直接父目录可访问；不搜索移走的副本。${checked}`}
-  case 'unavailable':return {symbol:'?',tone:'warning',description:`位置暂不可访问，可能断盘或权限不足，不能判定丢失。${checked}`}
+  case 'unavailable':return {symbol:'?',tone:'warning',description:`${detail||'位置暂不可访问。'} ${checked}`}
   case 'changed':return {symbol:'!',tone:'error',description:`登记位置的对象类型发生变化，需要核对。${checked}`}
-  case 'pending':return {symbol:'!',tone:'warning',description:`备份包删除未完成，存在待处理暂存。${checked}`}
+  case 'pending':return {symbol:'!',tone:'warning',description:`${detail||'备份包删除未完成。'} ${checked}`}
   default:return {symbol:'—',tone:'muted',description:'尚未检查备份包登记位置。'}
  }
 }
@@ -42,7 +44,7 @@ export function backupPresence(row:BackupRecord,key:BackupPresenceKey):Presence 
   symbol,tone,description:cloud?`${cloud.detail}。${fmtTime(cloud.checked_at)}`:'没有此备份的 Qman 上传记录。'
  }
  const mark=row.display?.marks?.[key]
- if(!mark)return observed
+ if(!mark||key==='package'&&row.local_state==='damaged')return observed
  return {
   symbol:mark.state==='present'?'√':'×',
   tone:mark.state==='present'?'success':'muted',

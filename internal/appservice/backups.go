@@ -98,7 +98,7 @@ func (s *Media) Backups() ([]catalog.BackupRecord, error) {
 		return nil, err
 	}
 	for n := range rows {
-		observeBackupLocation(&rows[n])
+		s.backupLocationWithCheck(&rows[n])
 	}
 	return rows, nil
 }
@@ -409,6 +409,7 @@ func (s *Media) backupJob(parent context.Context, phase string, fn func(context.
 	s.jobCancel = cancel
 	s.jobDone = done
 	s.state.Phase = phase
+	s.state.OperationResult = ""
 	s.state.Error = ""
 	s.state.Message = ""
 	s.state.Scanned = 0
@@ -541,8 +542,28 @@ func (s *Media) DeleteBackups(parent context.Context, ids []string) error {
 		if err != nil {
 			return err
 		}
-		failures := 0
+		failures, removed, absent, restored, retained, damaged, interrupted := 0, 0, 0, 0, 0, 0, 0
 		seen := map[string]bool{}
+		total := map[string]bool{}
+		for _, id := range ids {
+			total[id] = true
+		}
+		defer func() {
+			summary := fmt.Sprintf("已永久删除 %d 份，尚未处理 %d 份。", removed, len(total)-len(seen))
+			for _, count := range []struct {
+				label string
+				value int
+			}{
+				{"已恢复原位", restored}, {"完整保留", retained}, {"备份不完整", damaged}, {"删除中断", interrupted}, {"位置已缺失", absent}, {"未能删除", failures},
+			} {
+				if count.value > 0 {
+					summary += fmt.Sprintf("%s %d 份。", count.label, count.value)
+				}
+			}
+			s.mu.Lock()
+			s.state.OperationResult = summary
+			s.mu.Unlock()
+		}()
 		for i, id := range ids {
 			if err = ctx.Err(); err != nil {
 				return err
@@ -558,10 +579,39 @@ func (s *Media) DeleteBackups(parent context.Context, ids []string) error {
 			if row.Status == "deleted" {
 				observeBackupLocation(&row)
 				if row.LocalState == "missing" {
+					absent++
 					continue
 				}
 			}
+			row.PackageCheck = nil
+			row.LocalState = ""
 			e = s.deleteBackup(ctx, &row, protected)
+			if e != nil && ctx.Err() != nil {
+				row.Status, row.Detail = "delete_failed", "删除中断"
+				check, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+				recovered, checkErr := s.verifyBackupLocation(check, &row)
+				cancel()
+				switch {
+				case checkErr != nil:
+					interrupted++
+				case recovered:
+					restored++
+				case row.LocalState == "present":
+					retained++
+				case row.LocalState == "damaged":
+					damaged++
+				default:
+					interrupted++
+				}
+				if checkErr != nil {
+					return checkErr
+				}
+				if _, checkErr = s.RecordBackupInspection(row, nil); checkErr != nil {
+					return checkErr
+				}
+				s.backupEvent(row, "删除本地备份包", row.LocalDetail)
+				return ctx.Err()
+			}
 			if e != nil {
 				row.Status = "delete_failed"
 				row.Detail = e.Error()
@@ -569,8 +619,10 @@ func (s *Media) DeleteBackups(parent context.Context, ids []string) error {
 			} else {
 				row.Status = "deleted"
 				if row.LocalState == "missing" {
+					absent++
 					row.Detail = "登记位置已无备份包，本次未执行磁盘删除；若已移动可重新定位。历史保留，未清理原文件或独立副本"
 				} else {
+					removed++
 					row.Detail = "本地备份包已删除；本操作未连带清理源文件或已恢复副本"
 				}
 				row.DeletePath = ""
@@ -580,6 +632,9 @@ func (s *Media) DeleteBackups(parent context.Context, ids []string) error {
 			}
 			s.backupEvent(row, "删除本地备份包", row.Detail)
 			s.backupProgress(i+1, 0)
+		}
+		if err = ctx.Err(); err != nil {
+			return err
 		}
 		s.mu.Lock()
 		s.state.Message = fmt.Sprintf("备份删除操作结束，%d 项未完成；逐项结果已保存在备份历史", failures)

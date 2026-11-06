@@ -32,12 +32,30 @@ func (s *Media) BackupEvents(id string, offset int) ([]catalog.BackupEvent, erro
 
 func (s *Media) BackupLogIndex() ([]catalog.BackupRecord, error) { return s.catalog.Backups() }
 
-func (s *Media) InspectBackup(ctx context.Context, id string) (catalog.BackupRecord, error) {
+func (s *Media) InspectBackup(ctx context.Context, id string, explicit ...bool) (catalog.BackupRecord, error) {
+	verify := len(explicit) > 0 && explicit[0]
+	if verify {
+		s.op.Lock()
+		defer s.op.Unlock()
+		if s.busy() {
+			return catalog.BackupRecord{}, errors.New("请等待当前任务结束后检查备份")
+		}
+	}
 	row, err := s.catalog.Backup(id)
 	if err != nil {
 		return row, err
 	}
-	observeBackupLocation(&row)
+	if verify {
+		if _, err = s.verifyBackupLocation(ctx, &row); err != nil {
+			return row, err
+		}
+	} else {
+		s.backupLocationWithCheck(&row)
+	}
+	if ctx.Err() != nil && verify {
+		row.Display, err = s.catalog.BackupDisplay(id, row.Digest)
+		return row, err
+	}
 	row.OriginalFiles, err = s.inspectOriginalFiles(ctx, row)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -100,7 +118,7 @@ func (s *Media) RecordBackupInspection(row catalog.BackupRecord, cloud *catalog.
 				delete(d.Marks, key)
 			}
 		}
-		if row.LocationCheckedAt != nil && (row.LocalState == "present" || row.LocalState == "missing") {
+		if row.LocationCheckedAt != nil && (row.LocalState == "present" || row.LocalState == "missing" || row.LocalState == "damaged") {
 			clearMark("package", *row.LocationCheckedAt)
 		}
 		if r := row.OriginalFiles; r != nil && (r.State == "present" || r.State == "missing" || r.State == "partial") {

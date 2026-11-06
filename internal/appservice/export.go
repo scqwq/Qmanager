@@ -52,9 +52,15 @@ func (s *Media) ExportSelected(parent context.Context, path string, request Clea
 		s.mu.Unlock()
 		result, err := mediabackup.ExportFlat(ctx, target, items, excluded, s.backupProgress)
 		if err != nil {
+			if result.StagingRemainder != "" {
+				s.mu.Lock()
+				s.state.OperationResult = "本次未生成导出文件夹。\n暂存可能仍占用空间：" + result.StagingRemainder
+				s.mu.Unlock()
+			}
 			return err
 		}
 		s.mu.Lock()
+		s.state.OperationResult = fmt.Sprintf("已导出 %d 项。\n%s", result.Files, result.Path)
 		s.state.Message = fmt.Sprintf("已导出 %d 个文件，跳过 %d 项。保存位置：%s", result.Files, result.Excluded, result.Path)
 		s.mu.Unlock()
 		return nil

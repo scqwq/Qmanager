@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"encoding/json"
@@ -21,11 +20,9 @@ import (
 	"qqarchive/internal/cloud123"
 	"qqarchive/internal/diagnostics"
 	"qqarchive/internal/media"
-	"qqarchive/internal/mediabackup"
 	"qqarchive/internal/storage"
 	"strings"
 	"sync"
-	"time"
 )
 
 //go:embed all:frontend/dist
@@ -38,12 +35,6 @@ type App struct {
 	cloud        *cloud123.Service
 	backupPickMu sync.Mutex
 	backupPick   *backupPick
-}
-
-type backupPick struct {
-	ticket  string
-	row     catalog.BackupRecord
-	expires time.Time
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -91,257 +82,6 @@ func (a *App) shutdown(context.Context) {
 		a.cloud.Close()
 	}
 	a.media.Close()
-}
-func (a *App) ChooseSource() (string, error) {
-	settings, err := a.media.Settings()
-	if err != nil {
-		return "", err
-	}
-	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择 Tencent Files、账号目录或 nt_data（自动发现账号媒体）", DefaultDirectory: appservice.DirectoryDialogStart(settings.SourceDirectory), CanCreateDirectories: false})
-	if err != nil || path == "" {
-		return "", err
-	}
-	path, err = a.media.RememberSourceDirectory(path, false)
-	if err != nil {
-		return "", err
-	}
-	result, err := a.media.Discover(a.ctx, path)
-	return result.Root, err
-}
-func (a *App) StartScan() error              { return a.media.Start(a.ctx) }
-func (a *App) StartUpdate(mode string) error { return a.media.StartUpdate(a.ctx, mode) }
-func (a *App) CancelOperation(phase string, revision int) string {
-	return a.media.CancelOperation(phase, revision)
-}
-func (a *App) OperationReminder(operation, path string, confirm bool) (string, error) {
-	return a.media.OperationReminder(operation, path, confirm)
-}
-func (a *App) CancelScan()                       { a.media.Cancel() }
-func (a *App) GetState() appservice.State        { return a.media.State() }
-func (a *App) GetPage(f media.Filter) media.Page { return a.media.Page(f) }
-func (a *App) SwitchSource(id string) error      { return a.media.Switch(id) }
-func (a *App) RenameSource(name string) error    { return a.media.Rename(name) }
-func (a *App) StopWatch()                        { a.media.Stop() }
-func (a *App) StopUpdate() error                 { return a.media.StopUpdate() }
-func (a *App) GetEstimate(f media.Filter) (mediabackup.Preview, error) {
-	return a.media.BackupEstimate(f)
-}
-func (a *App) GetMediaURL(id string) (string, error)           { return a.media.MediaURL(id) }
-func (a *App) GetHistory(id string) ([]catalog.History, error) { return a.media.History(id) }
-func (a *App) GetBuckets(view string) []media.Bucket           { return a.media.Buckets(view) }
-func (a *App) GetFilterBuckets(f media.Filter) []media.Bucket {
-	return a.media.FilterBuckets(f)
-}
-func (a *App) OpenBackupLocation(id string) error {
-	path, err := a.media.BackupLocation(id)
-	if err != nil {
-		return err
-	}
-	return storage.OpenFolder(path)
-}
-func (a *App) CreateBackup(f media.Filter) error {
-	return a.CreateBackupWithFormat(f, "directory")
-}
-func (a *App) CreateBackupWithFormat(f media.Filter, format string) error {
-	path, err := a.ChooseBackupDestination()
-	if err != nil || path == "" {
-		return err
-	}
-	return a.media.BackupFormat(a.ctx, path, f, format)
-}
-func (a *App) GetSettings() (appservice.PathSettings, error) { return a.media.Settings() }
-func (a *App) GetDiagnostics() (diagnostics.Snapshot, error) { return diagnostics.Read() }
-func (a *App) EditDiagnosticRecord(kind, id string) error {
-	return diagnostics.EditRecord(kind, id)
-}
-func (a *App) GetAppearance() (appservice.AppearanceSettings, error) { return a.media.Appearance() }
-func (a *App) SaveAppearance(settings appservice.AppearanceSettings) (appservice.AppearanceSettings, error) {
-	return a.media.SaveAppearance(settings)
-}
-func (a *App) DiscardAppearancePreview() { a.media.DiscardAppearancePreview() }
-func (a *App) ChooseAppearanceImage() (appservice.AppearanceImage, error) {
-	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择背景图片", Filters: []runtime.FileFilter{{DisplayName: "静态 PNG / JPEG 图片", Pattern: "*.png;*.jpg;*.jpeg"}}})
-	if err != nil || path == "" {
-		return appservice.AppearanceImage{}, err
-	}
-	return a.media.ImportAppearanceImage(path)
-}
-func (a *App) SaveSettings(settings appservice.PathSettings) (appservice.PathSettings, error) {
-	return a.media.SaveSettings(settings)
-}
-func (a *App) ImportDefaultSource() (string, error) { return a.media.ImportDefaultSource(a.ctx) }
-func (a *App) SearchQQDirectory(id, hint, backupHint string) (appservice.DirectorySearchResult, error) {
-	return a.media.SearchQQDirectory(a.ctx, id, hint, backupHint)
-}
-func (a *App) CancelQQDirectorySearch(id string) { a.media.CancelQQDirectorySearch(id) }
-func (a *App) ChooseSettingsDirectory(kind, current string) (string, error) {
-	settings, err := a.media.Settings()
-	if err != nil {
-		return "", err
-	}
-	options := runtime.OpenDialogOptions{}
-	switch kind {
-	case "source":
-		options.Title = "选择默认 QQ 数据文件夹（如最外层 Tencent Files）"
-		options.DefaultDirectory = appservice.DirectoryDialogStart(current, settings.SourceDirectory)
-	case "export":
-		options.Title = "选择默认导出父目录"
-		options.CanCreateDirectories = true
-		options.DefaultDirectory = appservice.DirectoryDialogStart(current, settings.ExportDirectory)
-	case "backup":
-		options.Title = "选择默认备份保存目录（可新建文件夹）"
-		options.CanCreateDirectories = true
-		options.DefaultDirectory = appservice.DirectoryDialogStart(current, settings.BackupDirectory, a.media.Preference("backup_directory"))
-	default:
-		return "", fmt.Errorf("未知目录设置类型")
-	}
-	return runtime.OpenDirectoryDialog(a.ctx, options)
-}
-func (a *App) GetSelectedBackupEstimate(request appservice.CleanupRequest) (mediabackup.Preview, error) {
-	return a.media.SelectedBackupEstimate(a.ctx, request)
-}
-
-func (a *App) CreateSelectedBackup(request appservice.CleanupRequest, format, path string) error {
-	return a.media.BackupSelected(a.ctx, path, request, format)
-}
-
-func (a *App) ExportSelectedMedia(request appservice.CleanupRequest) error {
-	path, err := a.ChooseExportDestination()
-	if err != nil || path == "" {
-		return err
-	}
-	return a.ExportSelectedMediaAt(request, path)
-}
-
-func (a *App) ChooseExportDestination() (string, error) {
-	settings, err := a.media.Settings()
-	if err != nil || settings.ExportDirectory != "" {
-		return settings.ExportDirectory, err
-	}
-	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择导出父目录", CanCreateDirectories: true})
-}
-func (a *App) ExportSelectedMediaAt(request appservice.CleanupRequest, path string) error {
-	return a.media.ExportSelected(a.ctx, path, request)
-}
-func (a *App) GetBackupDirectory() (string, error) { return a.media.BackupDirectory() }
-func (a *App) ChooseBackupDestination() (string, error) {
-	defaultPath, err := a.media.BackupDirectory()
-	if err != nil {
-		return "", err
-	}
-	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择备份保存目录（可新建文件夹，复制并保留源文件）", DefaultDirectory: appservice.DirectoryDialogStart(defaultPath, a.media.Preference("backup_directory")), CanCreateDirectories: true})
-	if err != nil || path == "" {
-		return "", err
-	}
-	return a.media.RememberBackupDirectory(path)
-}
-func (a *App) CreateBackupAt(f media.Filter, format, path string) error {
-	return a.media.BackupFormat(a.ctx, path, f, format)
-}
-func (a *App) dialogDirectory(key string) string {
-	if key == "backup_directory" {
-		path, err := a.media.BackupDirectory()
-		if err != nil {
-			return ""
-		}
-		return appservice.DirectoryDialogStart(path, a.media.Preference(key))
-	}
-	path := a.media.Preference(key)
-	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		return path
-	}
-	return ""
-}
-func (a *App) GetBackupHistory() ([]catalog.BackupRecord, error) {
-	rows, err := a.media.Backups()
-	for i := range rows {
-		rows[i].Display = publicBackupDisplay(rows[i].Display)
-	}
-	return rows, err
-}
-func (a *App) CheckBackupOriginals(id string) error { return a.media.CheckBackupOriginals(a.ctx, id) }
-func (a *App) ChooseBackup(expectedID string) (*appservice.BackupPreview, error) {
-	choice, err := runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{Type: runtime.QuestionDialog, Title: "加载备份", Message: "请选择备份保存形式", Buttons: []string{"备份文件夹", "ZIP 文件", "取消"}, DefaultButton: "备份文件夹", CancelButton: "取消"})
-	if err != nil || choice == "取消" || choice == "" {
-		return nil, err
-	}
-	var path string
-	if choice == "ZIP 文件" {
-		path, err = runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择 Qman ZIP 备份", Filters: []runtime.FileFilter{{DisplayName: "Qman ZIP 备份", Pattern: "*.zip"}}, DefaultDirectory: a.dialogDirectory("backup_directory")})
-	} else {
-		path, err = runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择含 backup.json、.qman 和媒体目录树的备份目录", DefaultDirectory: a.dialogDirectory("backup_directory")})
-	}
-	if err != nil || path == "" {
-		return nil, err
-	}
-	preview, err := a.media.PreviewExternalBackup(a.ctx, path, expectedID)
-	if err != nil {
-		return nil, err
-	}
-	if expectedID != "" && preview.Record.ID != expectedID {
-		return nil, fmt.Errorf("所选备份编号与历史不符，未替换原记录")
-	}
-	preview.Ticket = rand.Text()
-	row := preview.Record
-	row.Manifest = ""
-	a.backupPickMu.Lock()
-	a.backupPick = &backupPick{ticket: preview.Ticket, row: row, expires: time.Now().Add(15 * time.Minute)}
-	a.backupPickMu.Unlock()
-	return &preview, nil
-}
-func (a *App) PreviewHistoryBackup(id string) (appservice.BackupPreview, error) {
-	return a.media.PreviewHistoryBackup(a.ctx, id)
-}
-func (a *App) ChooseRestoreTarget() (string, error) {
-	target, _, err := a.media.RestoreDirectory()
-	if err != nil {
-		return "", err
-	}
-	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择最外层 Tencent Files（按备份内账号路径补回）", DefaultDirectory: appservice.DirectoryDialogStart(target, a.media.Preference("restore_directory"))})
-	if err != nil || path == "" {
-		return "", err
-	}
-	return a.media.RememberSourceDirectory(path, true)
-}
-func (a *App) LoadBackup(id, target string) error { return a.media.RestoreBackup(a.ctx, id, target) }
-func (a *App) LoadSelectedBackup(ticket, target string) error {
-	a.backupPickMu.Lock()
-	pick := a.backupPick
-	if pick == nil || pick.ticket != ticket || time.Now().After(pick.expires) {
-		a.backupPickMu.Unlock()
-		return fmt.Errorf("所选备份已过期，请重新选择")
-	}
-	a.backupPick = nil
-	a.backupPickMu.Unlock()
-	return a.media.RestoreExternalBackup(a.ctx, pick.row, target)
-}
-func (a *App) ViewLoadedBackup(id string) error    { return a.media.ViewLoadedBackup(a.ctx, id) }
-func (a *App) DeleteBackups(ids []string) error    { return a.media.DeleteBackups(a.ctx, ids) }
-func (a *App) DeleteBackupHistory(id string) error { return a.media.DeleteBackupHistory(a.ctx, id) }
-func (a *App) PrepareMediaDelete(request appservice.CleanupRequest) error {
-	return a.media.PrepareMediaDelete(a.ctx, request)
-}
-func (a *App) PrepareBackupSourceDelete(ids []string) error {
-	return a.media.PrepareBackupSourceDelete(a.ctx, ids)
-}
-func (a *App) ExecuteMediaDelete(id string) error                      { return a.media.ExecuteMediaDelete(a.ctx, id) }
-func (a *App) GetMediaDeleteJob(id string) (catalog.CleanupJob, error) { return a.media.CleanupJob(id) }
-func (a *App) GetMediaDeleteItems(id string, offset, limit int) ([]catalog.CleanupItem, error) {
-	return a.media.CleanupItems(id, offset, limit)
-}
-func (a *App) OpenBackup() error {
-	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择含 backup.json、.qman 和媒体目录树的备份目录"})
-	if err != nil || path == "" {
-		return err
-	}
-	return a.media.OpenBackup(a.ctx, path)
-}
-func (a *App) ExportIndex() (string, error) {
-	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择应用记录备份位置（不含媒体文件）"})
-	if err != nil || path == "" {
-		return "", err
-	}
-	return a.media.ExportIndex(a.ctx, path)
 }
 
 // Wails calls startup only after acquiring its single-instance lock. Opening

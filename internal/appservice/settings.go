@@ -213,3 +213,5 @@ func DirectoryDialogStart(paths ...string) string {
 	}
 	return ""
 }
+
+func (s *Media) Preference(key string) string { v, _ := s.catalog.Preference(key); return v }

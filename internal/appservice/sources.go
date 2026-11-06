@@ -158,3 +158,72 @@ func chooseName(root string) string {
 	}
 	return filepath.Base(root)
 }
+
+func (s *Media) Select(path string) (media.Source, error) {
+	s.op.Lock()
+	defer s.op.Unlock()
+	if s.busy() {
+		return media.Source{}, errors.New("请等待当前任务结束")
+	}
+	s.stopLocked()
+	source, err := media.Resolve(path)
+	if err != nil {
+		return source, err
+	}
+	if media.Overlap(source.Resolved, s.private) {
+		return source, errors.New("媒体来源不能与应用数据重叠")
+	}
+	saved, err := s.catalog.Add(source.Resolved, chooseName(source.Resolved))
+	if err != nil {
+		return source, err
+	}
+	source.ID = saved.ID
+	source.Name = saved.Name
+	sources, err := s.catalog.Sources()
+	if err != nil {
+		return source, err
+	}
+	return source, s.activate(source, sources)
+}
+func (s *Media) Switch(id string) error {
+	s.op.Lock()
+	defer s.op.Unlock()
+	if s.busy() {
+		return errors.New("请等待当前任务结束")
+	}
+	s.stopLocked()
+	sources, err := s.catalog.Sources()
+	if err != nil {
+		return err
+	}
+	for _, source := range sources {
+		if source.ID == id {
+			return s.activate(savedMedia(source), sources)
+		}
+	}
+	return errors.New("未找到保存的账号来源")
+}
+func (s *Media) Rename(name string) error {
+	s.op.Lock()
+	defer s.op.Unlock()
+	s.mu.RLock()
+	source := s.state.Source
+	s.mu.RUnlock()
+	if source == nil {
+		return errors.New("请先选择来源")
+	}
+	if err := s.catalog.Rename(source.ID, name); err != nil {
+		return err
+	}
+	sources, err := s.catalog.Sources()
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	copySource := *source
+	copySource.Name = name
+	s.state.Source = &copySource
+	s.state.Sources = sources
+	s.mu.Unlock()
+	return nil
+}

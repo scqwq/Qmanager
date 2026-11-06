@@ -1,6 +1,6 @@
 # Qman / QQArchive — 工作交接与实现约定
 
-> 文档 1.37 · 更新于 2026-11-06 · 产品版本 0.9.1（Windows 桌面试用版）。
+> 文档 1.38 · 更新于 2026-11-07 · 产品版本 0.9.1（Windows 桌面试用版）。
 > 本文是换窗口后的当前工作入口；下述“已实现”表示已有代码，不等于真实数据与交付验收全部完成。旧聊天归档约定仅存于 docs/history/，不叠加执行。
 
 ## 1. 定位、当前重心与后续方向
@@ -118,10 +118,11 @@
 | 目录/文件 | 主要功能 |
 | --- | --- |
 | `internal/diagnostics/`、`components/LogsPage.vue` | 本机运行日志轮换/最近记录、Go崩溃输出及有界Windows故障摘要；主进程单实例启动后初始化，独立于QQ数据和SQLite；日志失败不绕过原回收保护 |
-| `main.go`、`wails.json`、`build/windows/` | 桌面入口、生命周期、原生目录对话框、前后端绑定、窗口/Windows 构建配置；业务逻辑不要继续堆在入口 |
-| `frontend/src/App.vue`、`api.ts`、`style.css` | 实际数据界面、来源/筛选/任务/详情交互、绑定类型和样式；前端不直接读磁盘或执行 SQL |
+| `main.go`、`wails.json`、`build/windows/` | 桌面入口、生命周期、资源路由、窗口和 Windows 构建配置 |
+| 根目录 `*_bindings.go`、`backup_records.go`、`cloud.go` | Wails 的 `App` 方法与原生对话框，按媒体/任务、备份、设置、备份记录和云盘分文件；流程交给 `internal/appservice` |
+| `frontend/src/` | `App.vue` 组织主界面、筛选和任务交互，`components/` 放各功能界面，`useMediaManager.ts` 和 `useFeedback.ts` 分管勾选/回收与反馈状态；`api.ts` 按功能列出 Wails 接口，`style.css` 管样式 |
 | `frontend/src/components/SourceDetails.vue`、`LibraryStatus.vue`、`FeedbackNotice.vue`，`feedback.ts`、`libraryStatus.ts`、`useFeedback.ts` | 顶栏来源浮层、当前更新/监控状态与控制、通俗提示/原文详情和页面/来源隔离；只消费后端状态，不扩大扫描或文件权限 |
-| `frontend/src/components/SettingsPage.vue`、`internal/appservice/settings.go` | 路径设置页面、私有默认配置的读取/原子保存、目录校验/隔离、默认导入与备份路径优先级；原生选择器接入在main.go，保存本身不枚举媒体 |
+| `frontend/src/components/SettingsPage.vue`、`internal/appservice/settings.go` | 路径设置页面、私有默认配置的读取/原子保存、目录校验/隔离、默认导入与备份路径优先级；原生选择器接入在 settings_bindings.go，保存本身不枚举媒体 |
 | `frontend/src/appearance.ts`、`components/AppearanceSettings.vue`、`AppearanceBackground.vue`、`internal/appservice/appearance.go` | 配套主题变量、外观预览/保存/撤销、内存图片草稿和私有副本、受控图片接口；与路径设置和媒体任务分开，不扩展媒体源权限 |
 | `internal/appservice/backup_status.go`、`internal/catalog/backup_status.go`、`components/BackupHistory.vue` | 原路径按清单只读核对、小型清理/恢复结果、旧加载记录提示/按需读取、单个中断恢复标记及历史状态展示；不把结果当删除授权 |
 | `internal/discovery/discovery.go` | 外层目录发现账号媒体根；深度 6、4096 目录、32768 条目、32 来源等有界限制，不全量读取所有账号媒体 |
@@ -129,7 +130,10 @@
 | `internal/watch/` | Windows ReadDirectoryChangesW 子树通知、有界事件队列；事件不是下载 API |
 | `internal/mediacleanup/`、`internal/catalog/cleanup.go` | 受支持来源/稳定实例校验、流式内容摘要与执行前复核；SQLite 固定清单/逐项结果/中断记录，保留观察历史 |
 | `internal/catalog/` | SQLite 投影/历史/导出；`incremental.go` 读取轻量已知路径和本轮受影响记录，不为名字补新解析全部旧 JSON；`cache.go` 管筛选/首次基线标记，`backups.go` 管备份记录 |
-| `internal/appservice/` | `StartUpdate` 验证 fast/full，`observation.go` 管一次人工全盘、周期快速补新/事件与稳定检查、缺口/起止证据；`sources.go` 定义 2 分钟补新；`selection_prepare.go` 共用固定实例、真实间隔稳定观察与排除变化项；`backup_prepare.go` 管备份所选范围，`observation_clock.go` 区分实际空闲停顿/业务耗时和时钟漂移。`cleanup.go`/`backup_cleanup.go` 保留严格源清理复核，不因快速缓存降级；`backup_history.go` 只删除已确认清包的历史，catalog事务使关联待确认清理失效 |
+| `internal/appservice/` 公共流程 | `service.go` 管应用状态和生命周期，`jobs.go` 管任务互斥、取消和进度，`path_protection.go` 管受保护的路径范围。Windows 文件能力和 SQLite 数据操作分别由 storage 和 catalog 提供 |
+| `internal/appservice/` 媒体 | `sources.go` 管来源选择和切换，`update.go` 管更新入口，`observation.go` 与 `observation_clock.go` 管扫描、监控、稳定检查和覆盖缺口；`library.go` 管查询、统计和索引导出，`preview_http.go` 管受控缩略图和媒体流 |
+| `internal/appservice/` 备份 | `backup_create.go` 和 `backup_prepare.go` 管估算、目标与创建，`backup_registry.go` 管预检、登记和列表，`backup_restore.go` 管恢复，`backup_view.go` 管独立视图，`backup_delete.go` 管永久删除和中断结果，`backup_integrity.go` 管校验及完整暂存包改回原名 |
+| `internal/appservice/` 选择和清理 | `selection_prepare.go` 共用固定实例、真实间隔稳定观察和排除变化项；`cleanup.go` 与 `backup_cleanup.go` 负责源文件回收；`backup_history.go` 仅在清包后清理历史和关联计划 |
 | `internal/mediabackup/` | `backup.go` 管逐路径复制/校验，`package.go` 与 `zip_limits.go` 管 ZIP 打包/有界读取，`restore.go` 管路径映射/不覆盖补回与回退，`delete.go` 只删除已隔离的备份对象集合；格式已改 qman-media-tree v2；metadata.go 管公共说明/目录引用/紧凑时间历史与私有快照，tree.go 管确切树集合校验，见 docs/MEDIA_FORMAT.md |
 | `internal/storage/` | 私有目录 ACL、容量/发布与只读 QQ 进程名称检查；`recycle_windows.go` 管 STA Shell 回收及逐项确认，不修改 QQ 权限。前端管理状态见 `frontend/src/useMediaManager.ts`，确认/结果见 `components/MediaDeleteDialog.vue` |
 | `cloud.go`、`internal/cloud123/`、`components/CloudPage.vue`、`CloudFolderPicker.vue`、`cloudFeedback.ts` | 独立云盘测试的登录、受控二维码图片、加密会话、目录选择、手选文件票据和上传任务；不依赖媒体扫描/观察账本。凭据和临时签名地址不回传前端或写普通日志，测试响应日志仅由显式本地测试构建启用 |
@@ -140,6 +144,8 @@
 | `docs/PROGRESS.md`、`docs/PROJECT_PLAN.md`、`docs/COMPATIBILITY.md` | 详细进展、待办验收与兼容证据；布局查 docs/NT_DATA_LAYOUT.md，测试查 docs/TESTING.md，关键决策查 docs/decisions/ |
 
 ## 7. 更新记录
+
+- **2026-11-07 · 文档 1.38 / 源码整理**：同包内按职责拆分 Wails 绑定和应用流程，展开前端查询、轮询及备份提交的长行，并按功能分组前端接口。产品版本继续为 0.9.1。整理前后 Go 声明和函数体一致，前端生产资源与已交付 EXE/ZIP 的 SHA-256 保持一致。独立重编的验证 EXE 仍为 0.9.1，完成独立数据目录的合成冷暖启动；该验证文件未替换交付产物。Go 静态检查及媒体查询、预览、备份恢复和取消相关专项通过。
 
 - **2026-11-06 · 0.9.1 / 文档 1.37**：备份和导出首次保存到桌面或 C 盘时确认，两个位置每天各一次；源媒体回收与本地备份包永久删除各有每天前两次的额外提醒，原操作确认继续逐次执行。取消后等待任务停止，再显示成品或删除统计。备份历史“更多操作”支持单份永久删除；删除中断和手动刷新执行完整性校验，完整暂存包可在原位置空闲时自动改回原名。破损显示×，不可核实显示?，原位置被占用则保留暂存并显示!。已交付 0.9.1 EXE 和便携包。合成专项及相关回归、前端构建、Go 静态检查、桌面及窄窗口截图检查和独立数据目录冷暖启动均通过，真实 QQ 数据仍待验收。见 docs/PROGRESS.md。
 

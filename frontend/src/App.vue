@@ -62,15 +62,65 @@ const availableYears=computed(()=>{const y=new Map<string,number>();for(const [m
 const years=computed(()=>availableYears.value.map(([y])=>y))
 const months=computed(()=>availableMonths.value.filter(([m])=>!year.value||m.startsWith(year.value+'-')))
 function filter():Filter{return {include_baseline:includeBaseline.value,kind:kind.value,month:month.value,month_from:year.value?year.value+'-01':'',month_to:year.value?year.value+'-12':'',role:role.value,status:status.value,min_bytes:Number(size.value)||0,max_bytes:0,offset:offset.value,limit:60,view:view.value,from:from.value,to:to.value}}
-async function load(){const id=++generation;const source=state.value.source?.id;querying.value=true;if(from.value&&to.value&&from.value>to.value){error.value='开始日期不能晚于结束日期';querying.value=false;return}error.value='';try{const [p,bs]=await Promise.all([api().GetPage(filter()),api().GetFilterBuckets(filter())]);if(id===generation&&!disposed&&source===state.value.source?.id){page.value=p;buckets.value=bs}}catch(e){error.value=String(e)}finally{if(id===generation)querying.value=false}}
+async function load(){
+ const id=++generation
+ const source=state.value.source?.id
+ querying.value=true
+ if(from.value&&to.value&&from.value>to.value){
+  error.value='开始日期不能晚于结束日期'
+  querying.value=false
+  return
+ }
+ error.value=''
+ try{
+  const [p,bs]=await Promise.all([api().GetPage(filter()),api().GetFilterBuckets(filter())])
+  if(id===generation&&!disposed&&source===state.value.source?.id){
+   page.value=p
+   buckets.value=bs
+  }
+ }catch(e){
+  error.value=String(e)
+ }finally{
+  if(id===generation)querying.value=false
+ }
+}
 function selectYear(){month.value='';from.value='';to.value=''};
 function selectMonth(value:string){month.value=value;if(view.value==='observed'){from.value='';to.value=''}}
 function selectSidebarYear(value:string){year.value=value;selectYear()}
 function queryDate(){year.value='';month.value='';offset.value=0;void load()}
 function resetFilters(){year.value='';kind.value='';month.value='';from.value='';to.value='';role.value='';status.value='';size.value='';offset.value=0;void load()}
 function showInitialImport(){includeBaseline.value=true;offset.value=0}
-async function poll(){if(polling||!hasDesktop()||disposed)return;polling=true;try{const revision=state.value.revision;state.value=await api().GetState();if(revision!==state.value.revision)await load();void api().UIReady()}catch(e){error.value=String(e)}finally{polling=false}}
-async function run(fn:()=>Promise<unknown>){feedback.begin();action.value=true;generation++;error.value='';try{await fn();state.value=await api().GetState();await load()}catch(e){error.value=String(e)}finally{action.value=false;feedback.accepted()}}
+async function poll(){
+ if(polling||!hasDesktop()||disposed)return
+ polling=true
+ try{
+  const revision=state.value.revision
+  state.value=await api().GetState()
+  if(revision!==state.value.revision)await load()
+  void api().UIReady()
+ }catch(e){
+  error.value=String(e)
+ }finally{
+  polling=false
+ }
+}
+
+async function run(fn:()=>Promise<unknown>){
+ feedback.begin()
+ action.value=true
+ generation++
+ error.value=''
+ try{
+  await fn()
+  state.value=await api().GetState()
+  await load()
+ }catch(e){
+  error.value=String(e)
+ }finally{
+  action.value=false
+  feedback.accepted()
+ }
+}
 const manager=reactive(useMediaManager(state,busy,filter,run))
 const selectedCount=computed(()=>manager.all?Math.max(0,page.value.total-manager.excludedCount):manager.manualCount)
 const choose=()=>run(async()=>{const path=await api().ChooseSource();if(path){settingsPage.value=false;historyPage.value=false;year.value='';failed.value=new Set();selected.value=null;month.value='';offset.value=0}})
@@ -170,7 +220,29 @@ function exportSelected(){
   if(path&&await confirmReminder('destination',path,'导出'))await api().ExportSelectedMediaAt(request,path)
  })
 }
-async function backup(f:Filter,format:string,path:string){feedback.begin();backupSubmitting.value=true;action.value=true;backupError.value='';try{if(!await confirmReminder('destination',path,'备份'))return;if(backupSelection.value)await api().CreateSelectedBackup(backupSelection.value,format,path);else await api().CreateBackupAt(f,format,path);exportFilter.value=null;state.value=await api().GetState();await load()}catch(e){backupError.value=String(e)}finally{backupSubmitting.value=false;action.value=false;feedback.accepted()}}
+async function backup(f:Filter,format:string,path:string){
+ feedback.begin()
+ backupSubmitting.value=true
+ action.value=true
+ backupError.value=''
+ try{
+  if(!await confirmReminder('destination',path,'备份'))return
+  if(backupSelection.value){
+   await api().CreateSelectedBackup(backupSelection.value,format,path)
+  }else{
+   await api().CreateBackupAt(f,format,path)
+  }
+  exportFilter.value=null
+  state.value=await api().GetState()
+  await load()
+ }catch(e){
+  backupError.value=String(e)
+ }finally{
+  backupSubmitting.value=false
+  action.value=false
+  feedback.accepted()
+ }
+}
 const recordsMessage=ref(''),recordsError=ref('')
 async function exportIndex(){action.value=true;recordsMessage.value='';recordsError.value='';try{const path=await api().ExportIndex();if(path)recordsMessage.value=`应用记录已备份：${path}`}catch(e){recordsError.value=String(e)}finally{action.value=false}}
 async function rename(name:string){await run(()=>api().RenameSource(name))}

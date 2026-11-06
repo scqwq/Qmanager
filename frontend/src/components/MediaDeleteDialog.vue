@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import FeedbackNotice from './FeedbackNotice.vue'
 import {errorFeedback} from '../feedback'
+import {filterScope} from '../filterPresentation'
 import {computed,onMounted,onUnmounted,ref,watch} from 'vue'
 import {api,type CleanupItem,type CleanupJob} from '../api'
 const props=defineProps<{job:CleanupJob;busy:boolean;readOnly?:boolean}>()
 const emit=defineEmits<{close:[];confirm:[id:string]}>()
 const rows=ref<CleanupItem[]>([]),offset=ref(0),checked=ref(false),error=ref(''),loading=ref(false)
 const preparing=computed(()=>!props.readOnly&&props.job.state==='prepared')
-const scope=computed(()=>{if(props.job.backup_ids?.length)return '按备份中的原实例与内容清理';const f=props.job.filter;const types:Record<string,string>={image:'图片',video:'视频',emoji:'收到的表情',voice:'语音'};return `${types[f.kind]||'全部类型'} · ${f.view==='observed'?'发现日期':'来源月份'} · ${f.month||((f.month_from||f.month_to)?`${f.month_from||'不限'} 至 ${f.month_to||'不限'}`:'全部月份')}${f.from||f.to?` · ${f.from||'不限'} 至 ${f.to||'不限'}`:''}`})
+const scope=computed(()=>props.job.backup_ids?.length?'按备份中的原实例与内容清理':filterScope(props.job.filter))
 const labels:Record<string,string>={ready:'待删除',recycled:'已回收',skipped:'已跳过',failed:'失败',uncertain:'待核对',pending:'未处理',processing:'处理中'}
 const bytes=(n:number)=>`${(n/1024/1024).toLocaleString(undefined,{maximumFractionDigits:1})} MiB`
 let generation=0,disposed=false

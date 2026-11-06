@@ -7,5 +7,5 @@
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": { "name": "Qman contributors" },
-  "info": { "companyName": "Qman contributors", "productName": "Qman", "productVersion": "0.9.1", "copyright": "Qman contributors", "comments": "Local media manager - preview build" }
+  "info": { "companyName": "Qman contributors", "productName": "Qman", "productVersion": "0.9.2", "copyright": "Qman contributors", "comments": "Local media manager - preview build" }
 }

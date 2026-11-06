@@ -95,6 +95,10 @@ func (s *Media) ExportIndex(ctx context.Context, target string) (string, error) 
 
 func (s *Media) DataPath() string { return filepath.Join(s.private, "catalog.sqlite") }
 func (s *Media) Buckets(view string, includeBaseline ...bool) []media.Bucket {
+	return s.buckets(view, len(includeBaseline) > 0 && includeBaseline[0], "")
+}
+
+func (s *Media) buckets(view string, includeBaseline bool, sourceMonth string) []media.Bucket {
 	s.mu.RLock()
 	if s.state.Mode != "backup" {
 		source := s.state.Source
@@ -102,7 +106,13 @@ func (s *Media) Buckets(view string, includeBaseline ...bool) []media.Bucket {
 		if source == nil {
 			return []media.Bucket{}
 		}
-		b, err := s.catalog.Buckets(source.ID, view, includeBaseline...)
+		var b []media.Bucket
+		var err error
+		if view == "observed" {
+			b, err = s.catalog.ObservedBuckets(source.ID, includeBaseline, sourceMonth)
+		} else {
+			b, err = s.catalog.Buckets(source.ID, view)
+		}
 		if err != nil {
 			s.fail(err)
 			return []media.Bucket{}
@@ -111,9 +121,13 @@ func (s *Media) Buckets(view string, includeBaseline ...bool) []media.Bucket {
 	}
 	defer s.mu.RUnlock()
 	items := make([]media.Item, 0, len(s.items))
+	filter := media.Filter{SourceMonth: sourceMonth}
 	for _, item := range s.items {
+		if !filter.MatchesSourceMonth(item.SourceMonth) {
+			continue
+		}
 		if view == "observed" {
-			if (item.Method == "baseline" && !(len(includeBaseline) > 0 && includeBaseline[0])) || item.FirstSeenAt.IsZero() {
+			if (item.Method == "baseline" && !includeBaseline) || item.FirstSeenAt.IsZero() {
 				continue
 			}
 			item.SourceMonth = item.FirstSeenAt.Local().Format("2006-01")

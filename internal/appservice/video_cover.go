@@ -32,7 +32,7 @@ func (s *Media) videoCover(video media.Item) (media.Item, bool) {
 // Navigation counts reflect standalone cards; inventory and backup counts retain
 // every physical file. An explicit role also narrows navigation to that role.
 func (s *Media) FilterBuckets(f media.Filter) []media.Bucket {
-	buckets := s.Buckets(f.View, f.IncludeBaseline)
+	buckets := s.buckets(f.View, f.IncludeBaseline, f.SourceMonth)
 	out := make([]media.Bucket, 0, len(buckets))
 	for _, b := range buckets {
 		if media.VisibleRole(b.Kind, b.Role, f.Role) && (f.Role == "" || f.Role == b.Role) {

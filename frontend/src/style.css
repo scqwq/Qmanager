@@ -33,6 +33,7 @@
   --media-shadow: 0 2px 8px rgb(36 54 72 / 8%), 0 0 1px rgb(36 54 72 / 8%);
 }
 * { box-sizing: border-box; }
+html { scrollbar-gutter: stable; }
 body { margin: 0; min-width: 320px; }
 button, input, select { font: inherit; line-height: 1.4; }
 button, summary { cursor: pointer; }
@@ -118,9 +119,11 @@ main { margin-left: 224px; min-width: 0; }
 .view-toggle button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
 .view-toggle button.chosen { background: var(--soft); color: var(--accent-text); }
 .datebar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 18px 0 8px; font-size: 14px; }
-.datebar > label:first-child { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.date-range-title { white-space: nowrap; }
+.date-range, .date-endpoint { display: flex; align-items: center; gap: 8px; }
+.date-range { flex-wrap: wrap; }
+.date-endpoint select { width: 72px; font-size: 14px; }
 .datebar input[type="date"] { width: 145px; font-size: 14px; }
-.datebar > span { width: 100%; color: var(--muted); }
 .baseline-toggle, .check-line { display: flex; align-items: flex-start; gap: 8px; line-height: 1.8; }
 .baseline-toggle input, .check-line input { margin: 3px 0 0; }
 .observation-note { padding: 12px 0; font-size: 14px; line-height: 1.8; color: var(--muted); }
@@ -316,7 +319,6 @@ main { margin-left: 224px; min-width: 0; }
   .tabs { gap: 22px; }
   .filterbar select { flex: 1 1 100px; max-width: 100%; }
   .view-toggle { margin-left: 0; }
-  .datebar > label:first-child { align-items: flex-start; }
   .datebar input[type="date"] { min-width: 0; width: 138px; }
   .result-caption { align-items: flex-start; }
   .result-caption .text-button { flex-shrink: 0; }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import FeedbackNotice from './FeedbackNotice.vue'
 import {errorFeedback} from '../feedback'
+import {filterScope} from '../filterPresentation'
 import {computed,onMounted,onUnmounted,ref,watch} from 'vue'
 import {api,type BackupMarkState,type BackupPresenceKey,type BackupRecord} from '../api'
 import HelpTip from './HelpTip.vue'
@@ -24,7 +25,7 @@ const cleanable=computed(()=>selectedRecords.value.filter(r=>r.files>0))
 const allChecked=computed(()=>rows.value.slice(0,100).length>0&&rows.value.slice(0,100).every(r=>checked.value.includes(r.id)))
 const partiallyChecked=computed(()=>checked.value.length>0&&!allChecked.value)
 const bytes=(v:number)=>`${(v/1024/1024).toLocaleString(undefined,{maximumFractionDigits:1})} MiB`
-function scope(r:BackupRecord){if(r.selected_only)return '已选媒体';const f=r.selection;const names:Record<string,string>={image:'图片',video:'视频',emoji:'收到的表情',voice:'语音'};return `${names[f.kind]||'全部类型'} · ${f.month_from||f.month_to?`${f.month_from||'不限'} 至 ${f.month_to||'不限'}`:f.month||'全部月份'}${f.view==='observed'?' · 发现日期视图':''}${f.from||f.to?` · ${f.from||'不限'} 至 ${f.to||'不限'}`:''}`}
+function scope(r:BackupRecord){return r.selected_only?'已选媒体':filterScope(r.selection)}
 let loading=false,disposed=false,refreshAgain=false,verifyAgain=false
 const rowVersions=new Map<string,number>()
 async function refresh(explicit=false){

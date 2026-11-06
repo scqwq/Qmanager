@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"qqarchive/internal/catalog"
 	"qqarchive/internal/media"
+	"qqarchive/internal/mediabackup"
 	"qqarchive/internal/testfixture"
 	"reflect"
 	"testing"
@@ -334,5 +335,30 @@ func TestHistoryDoesNotFollowDifferentBackupAtOldPath(t *testing.T) {
 	rows, _ = s.Backups()
 	if len(rows) != 1 || rows[0].ID != row.ID {
 		t.Fatal("replacement registered as another history entry")
+	}
+}
+
+func TestBackupSelectionRetainsRecordHourAndSourceMonth(t *testing.T) {
+	s, _, _ := backupService(t)
+	original := s.Page(media.Filter{Month: "2025-01"})
+	if original.Total != 1 {
+		t.Fatalf("expected one fixture from January, got %d", original.Total)
+	}
+	hour := original.Items[0].FirstSeenAt.Local().Format("2006-01-02T15")
+	filter := media.Filter{View: "observed", IncludeBaseline: true, SourceMonth: "2025-01", From: hour, To: hour}
+	if err := s.Backup(context.Background(), t.TempDir(), filter); err != nil {
+		t.Fatal(err)
+	}
+	waitBackupJob(t, s)
+	state := s.State()
+	if state.Error != "" || state.Backup == nil || state.Backup.Files != 1 {
+		t.Fatalf("scoped backup failed: %q, %+v", state.Error, state.Backup)
+	}
+	manifest, _, err := mediabackup.Open(context.Background(), state.Backup.Path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Selection != filter || len(manifest.Entries) != 1 || manifest.Entries[0].Item.SourceMonth != "2025-01" {
+		t.Fatalf("scope lost in round trip: %+v", manifest.Selection)
 	}
 }

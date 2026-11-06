@@ -117,6 +117,13 @@ func cacheWhere(source string, f media.Filter) (string, []interface{}, error) {
 	if f.Role != "" {
 		add("c.role=?", f.Role)
 	}
+	if f.SourceMonth != "" {
+		month := f.SourceMonth
+		if month == "__unknown__" {
+			month = ""
+		}
+		add("c.month=?", month)
+	}
 	if f.HideVideoCovers && f.Role != "cover" {
 		clauses = append(clauses, "NOT (c.kind='video' AND c.role='cover')")
 	}
@@ -176,19 +183,15 @@ func cacheWhere(source string, f media.Filter) (string, []interface{}, error) {
 			}
 		}
 	}
-	if f.From != "" {
-		start, e := time.ParseInLocation("2006-01-02", f.From, time.Local)
-		if e != nil {
-			return "", nil, e
-		}
+	start, end, err := f.RecordRange()
+	if err != nil {
+		return "", nil, err
+	}
+	if !start.IsZero() {
 		at(">=", start)
 	}
-	if f.To != "" {
-		end, e := time.ParseInLocation("2006-01-02", f.To, time.Local)
-		if e != nil {
-			return "", nil, e
-		}
-		at("<", end.AddDate(0, 0, 1))
+	if !end.IsZero() {
+		at("<", end)
 	}
 	return strings.Join(clauses, " AND "), args, nil
 }
@@ -257,11 +260,16 @@ func (c *Catalog) Buckets(source, view string, includeBaseline ...bool) ([]media
 		}
 		return out, rows.Err()
 	}
-	condition := " AND method<>'baseline'"
-	if len(includeBaseline) > 0 && includeBaseline[0] {
-		condition = ""
+	return c.ObservedBuckets(source, len(includeBaseline) > 0 && includeBaseline[0], "")
+}
+
+func (c *Catalog) ObservedBuckets(source string, includeBaseline bool, sourceMonth string) ([]media.Bucket, error) {
+	out := []media.Bucket{}
+	where, args, err := cacheWhere(source, media.Filter{View: "observed", IncludeBaseline: includeBaseline, SourceMonth: sourceMonth})
+	if err != nil {
+		return nil, err
 	}
-	rows, err := c.db.Query("SELECT kind,first_seen,role,count(*),sum(bytes) FROM media_cache WHERE source=?"+condition+" AND first_seen<>'' GROUP BY kind,first_seen,role", source)
+	rows, err := c.db.Query("SELECT c.kind,c.first_seen,c.role,count(*),sum(c.bytes) FROM media_cache c WHERE "+where+" GROUP BY c.kind,c.first_seen,c.role", args...)
 	if err != nil {
 		return nil, err
 	}

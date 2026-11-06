@@ -88,6 +88,7 @@ type Report struct {
 type Filter struct {
 	// Display-only restriction. Never accepted from JSON or inherited by backups.
 	HideVideoCovers bool   `json:"-"`
+	SourceMonth     string `json:"source_month,omitempty"`
 	MonthFrom       string `json:"month_from,omitempty"`
 	MonthTo         string `json:"month_to,omitempty"`
 	IncludeBaseline bool   `json:"include_baseline"`
@@ -142,6 +143,9 @@ func Matches(item Item, f Filter) bool {
 	if f.HideVideoCovers && !VisibleRole(item.Kind, item.Role, f.Role) {
 		return false
 	}
+	if !f.MatchesSourceMonth(item.SourceMonth) {
+		return false
+	}
 	month := item.SourceMonth
 	if f.View == "observed" {
 		if (item.Method == "baseline" && !f.IncludeBaseline) || item.FirstSeenAt.IsZero() {
@@ -159,17 +163,9 @@ func Matches(item Item, f Filter) bool {
 	if (f.MonthFrom != "" || f.MonthTo != "") && (month == "" || f.MonthFrom != "" && month < f.MonthFrom || f.MonthTo != "" && month > f.MonthTo) {
 		return false
 	}
-	if f.From != "" {
-		t, e := time.ParseInLocation("2006-01-02", f.From, time.Local)
-		if e != nil || item.FirstSeenAt.Before(t) {
-			return false
-		}
-	}
-	if f.To != "" {
-		t, e := time.ParseInLocation("2006-01-02", f.To, time.Local)
-		if e != nil || !item.FirstSeenAt.Before(t.AddDate(0, 0, 1)) {
-			return false
-		}
+	start, end, err := f.RecordRange()
+	if err != nil || (!start.IsZero() && item.FirstSeenAt.Before(start)) || (!end.IsZero() && !item.FirstSeenAt.Before(end)) {
+		return false
 	}
 	return !(f.Kind != "" && item.Kind != f.Kind || f.Role != "" && item.Role != f.Role || f.Status != "" && item.Status != f.Status || item.Bytes < f.MinBytes || f.MaxBytes > 0 && item.Bytes > f.MaxBytes)
 }

@@ -17,7 +17,7 @@ const candidates=computed(()=>(estimate.value?.files??0)+(estimate.value?.pendin
 const exclusions=computed(()=>Object.entries(estimate.value?.excluded_reasons??{}).filter(([,n])=>n>0))
 const filter=computed<Filter>(()=>{
  const f={...props.initial,kind:kind.value,offset:0}
- if(scope.value!=='current'){f.view='source';f.month='';f.from='';f.to='';f.month_from=scope.value==='year'?`${year.value}-01`:first.value;f.month_to=scope.value==='year'?`${year.value}-12`:last.value}
+ if(scope.value!=='current'){f.view='source';f.source_month=undefined;f.month='';f.from='';f.to='';f.month_from=scope.value==='year'?`${year.value}-01`:first.value;f.month_to=scope.value==='year'?`${year.value}-12`:last.value}
  return f
 })
 async function update(quiet=false){

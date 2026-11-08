@@ -56,9 +56,8 @@ onUnmounted(()=>{disposed=true;revertAppearance();void api().DiscardAppearancePr
    <fieldset class="appearance-field" :disabled="pending">
     <legend>面板不透明度</legend>
     <div class="appearance-opacity"><input id="panel-opacity" v-model.number="draft.panel_opacity" aria-label="面板不透明度" type="range" min="0" max="100" step="1"/><output for="panel-opacity">{{draft.panel_opacity}}%</output></div>
-    <p class="appearance-help">0% 透明，100% 实色。文字、控件和弹窗保持清楚。</p>
    </fieldset>
-   <div class="settings-actions"><button type="submit" class="primary" :disabled="pending||(!dirty&&!appearanceError)">{{pending?'请稍候…':'保存外观'}}</button><button type="button" class="secondary" :disabled="pending||!dirty" @click="reset">撤销修改</button><button type="button" class="text-button" :disabled="pending" @click="defaults">恢复默认</button><small>修改即时预览，离开此页撤销未保存修改。</small></div>
+   <div class="settings-actions"><button type="submit" class="primary" :disabled="pending||(!dirty&&!appearanceError)">{{pending?'请稍候…':'保存外观'}}</button><button type="button" class="secondary" :disabled="pending||!dirty" @click="reset">撤销修改</button><button type="button" class="text-button" :disabled="pending" @click="defaults">恢复默认</button></div>
   </form>
  </section>
 </template>

@@ -13,6 +13,7 @@ import {useFeedback} from './useFeedback'
 import {libraryStatus} from './libraryStatus'
 import type {FeedbackPage} from './feedback'
 import FeedbackNotice from './components/FeedbackNotice.vue'
+import HelpTip from './components/HelpTip.vue'
 import SourceDetails from './components/SourceDetails.vue'
 import LibraryStatus from './components/LibraryStatus.vue'
 import AppearanceBackground from './components/AppearanceBackground.vue'
@@ -299,7 +300,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
 <div class="shell">
  <AppearanceBackground/>
  <aside class="sidebar">
-  <div class="brand"><strong>Qman</strong><span>媒体管理</span></div>
+  <div class="brand"><strong>Qmanager</strong></div>
   <label class="source-label" for="source-choice">{{state.mode==='backup'?'独立备份':'当前账号 / 来源'}}</label>
   <select id="source-choice" class="source-select" aria-label="切换媒体来源" :disabled="busy" @change="switchSource" :value="state.mode==='source'?(state.source?.id??''):''">
    <option value="" disabled>{{state.mode==='backup'?'切换回账号来源':'请选择账号 / 来源'}}</option>
@@ -326,7 +327,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
    </div>
   </template>
   <button class="nav-item settings-nav" :class="{active:settingsPage}" :disabled="!desktop" @click="settingsPage=true;historyPage=false">设置</button>
-  <div class="sidebar-footer">本机处理 <span>0.9.2</span></div>
+  <div class="sidebar-footer">本机处理 <span>0.9.3</span></div>
  </aside>
  <main>
   <header class="topbar">
@@ -368,14 +369,17 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
          </div>
         </div>
         <button class="secondary" type="submit" :disabled="querying||invalidRecordRange">查询</button>
-        <label class="baseline-toggle"><input type="checkbox" v-model="includeBaseline"/>包含首次导入记录</label>
+        <div class="baseline-control">
+         <label class="baseline-toggle"><input type="checkbox" v-model="includeBaseline"/>包含首次导入记录</label>
+         <HelpTip activation="hover" label="关于首次导入记录" text="首次导入时的文件需勾选此选项查看"/>
+        </div>
        </form>
-       <div v-if="view==='observed'" class="observation-note">{{includeBaseline?'首次导入记录的日期仅表示建立索引时间，仍标记“扫描前已存在”。':'默认排除首次导入时已有的文件，可勾选上方选项查看。'}}<span v-if="page.baseline_files&&!includeBaseline"> 当前条件另有 {{page.baseline_files.toLocaleString()}} 条首次导入记录。</span></div>
+       <div v-if="view==='observed'&&(includeBaseline||page.baseline_files)" class="observation-note">{{includeBaseline?'首次导入记录的日期仅表示建立索引时间，仍标记“扫描前已存在”。':`当前条件另有 ${page.baseline_files.toLocaleString()} 条首次导入记录。`}}</div>
        <div v-if="manager.active" class="manage-toolbar">
         <div class="manage-selection"><span>已选 {{selectedCount.toLocaleString()}} 个</span><button class="secondary" :disabled="busy||querying||invalidRecordRange||!page.items.length" @click="manager.selectPage(page.items)">{{manager.pageSelected(page.items)?'取消本页':'选择本页'}}</button><button class="secondary" :disabled="busy||querying||invalidRecordRange||!page.total" @click="manager.selectAll">选择所有匹配结果</button><button class="text-button" :disabled="busy||(!selectedCount&&!manager.all)" @click="manager.clear">清空选择</button></div>
         <div class="manage-actions"><button class="secondary" :disabled="busy||querying||invalidRecordRange||!selectedCount" @click="prepareBackup(true)">备份</button><button class="secondary" :disabled="busy||querying||invalidRecordRange||!selectedCount" @click="exportSelected">导出</button><button class="danger-button" :disabled="busy||querying||invalidRecordRange||!selectedCount" @click="manager.prepare">删除</button></div>
        </div>
-       <div class="result-caption"><div><strong>当前筛选 {{page.total.toLocaleString()}} 个文件</strong><span>逻辑大小 {{bytes(page.bytes)}} · 含原件、预览和临时资源，不是可释放空间</span></div><button class="text-button" @click="resetFilters">清空筛选</button></div>
+       <div class="result-caption"><div><strong>当前筛选 {{page.total.toLocaleString()}} 个文件</strong><span>逻辑大小 {{bytes(page.bytes)}}，不等于可释放空间</span></div><button class="text-button" @click="resetFilters">清空筛选</button></div>
        <div v-if="querying" class="query-indicator" role="status">正在更新筛选结果…</div>
        <div v-if="!page.items.length&&!querying" class="no-results"><template v-if="view==='observed'&&!includeBaseline&&page.baseline_files"><p>{{page.baseline_files.toLocaleString()}} 个文件属于首次导入记录，默认不列为后续新增。</p><button class="secondary" @click="showInitialImport">查看首次导入记录</button></template><template v-else><p>没有符合当前条件的文件。</p><button class="secondary" @click="resetFilters">清空筛选</button></template></div>
        <div v-else class="media-grid" :class="{listing}"><div v-for="item in page.items" :key="item.id" class="media-entry" :class="{selected:manager.active&&manager.isSelected(item)}"><button class="media-card" @click="manager.active?manager.select(item):inspect(item)"><div class="media-preview"><img v-if="(item.preview||item.cover_id)&&!failed.has(item.id)" :src="thumb(item)" alt="静态缩略预览" loading="lazy" @error="failPreview(item.id)"/><div v-else class="media-placeholder"><span>{{kindName(item.kind)}}</span><small>{{failed.has(item.id)?'预览失败':item.format==='iso-bmff'?'点击尝试播放':item.format==='silk'?'SILK · 原文件保留':item.status==='recognized'?'暂不支持预览':statuses[item.status]}}</small></div><span class="role-tag">{{roles[item.role]}}</span></div><div class="media-info"><strong :title="item.relative_path">{{name(item)}}</strong><div><span>{{item.source_month||'月份未知'}} · {{item.format.toUpperCase()}}</span><span>{{bytes(item.bytes)}}</span></div><small class="item-state"><span v-if="readiness(item)" class="pending">{{readiness(item)}} · </span>{{methods[item.observation_method]??'时间证据未知'}}</small></div></button><label v-if="manager.active" class="media-check"><input type="checkbox" :aria-label="'选择 '+item.relative_path" :checked="manager.isSelected(item)" :disabled="busy" @change="manager.select(item)"/></label></div></div>

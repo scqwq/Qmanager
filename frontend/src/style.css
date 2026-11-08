@@ -68,9 +68,8 @@ input:disabled, select:disabled { background: var(--soft); color: var(--muted); 
   background: var(--sidebar); border-right: 1px solid var(--line); padding: 28px 18px 18px;
   display: flex; flex-direction: column; overflow: hidden;
 }
-.brand { display: flex; gap: 10px; align-items: baseline; margin: 0 10px 30px; }
-.brand strong { color: var(--accent-text); font-size: 28px; letter-spacing: -.7px; }
-.brand span { font-size: 14px; color: var(--muted); }
+.brand { margin: 0 10px 30px; }
+.brand strong { color: var(--accent-text); font-size: 30px; letter-spacing: -.7px; }
 .source-label, .nav-label { font-size: 14px; color: var(--muted); margin: 0 10px 8px; }
 .source-select { width: 100%; font-size: 14px; background: var(--surface); }
 .source-choose { margin: 8px 0 22px; padding: 7px 9px; background: none; color: var(--accent); border: 0; text-align: left; font-size: 14px; }
@@ -125,6 +124,7 @@ main { margin-left: 224px; min-width: 0; }
 .date-endpoint select { width: 72px; font-size: 14px; }
 .datebar input[type="date"] { width: 145px; font-size: 14px; }
 .baseline-toggle, .check-line { display: flex; align-items: flex-start; gap: 8px; line-height: 1.8; }
+.baseline-control, .settings-field-title { display: flex; align-items: center; gap: 8px; }
 .baseline-toggle input, .check-line input { margin: 3px 0 0; }
 .observation-note { padding: 12px 0; font-size: 14px; line-height: 1.8; color: var(--muted); }
 .result-caption { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 24px 0 18px; }
@@ -253,7 +253,7 @@ main { margin-left: 224px; min-width: 0; }
 .settings-intro { color: var(--muted); line-height: 1.8; margin: 2px 0 28px; }
 .settings-form { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0 28px; }
 .settings-field { padding: 32px 0; border-bottom: 1px solid var(--line); }
-.settings-field > label { display: block; font-size: 20px; font-weight: 600; }
+.settings-field > label, .settings-field-title > label { display: block; font-size: 20px; font-weight: 600; }
 .settings-field p { font-size: 14px; color: var(--muted); line-height: 1.9; margin: 12px 0; }
 .settings-path { display: flex; gap: 12px; align-items: center; margin: 18px 0; }
 .settings-path input { flex: 1; min-width: 0; font-size: 14px; min-height: 42px; }

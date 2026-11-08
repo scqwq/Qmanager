@@ -99,10 +99,13 @@ onUnmounted(()=>{disposed=true;const id=searchID;finishSearch(id);if(id)void api
    <details class="settings-help"><summary>未设置时如何保存？</summary><p>沿用上次保存位置；首次选择会填入默认目录。单次选择不会覆盖已有默认值。</p></details>
   </section>
   <section class="settings-field">
-   <label for="default-export">默认导出父目录</label>
+   <div class="settings-field-title">
+    <label for="default-export">默认导出父目录</label>
+    <HelpTip activation="click" label="关于媒体导出" text="导出不会保存目录树，不可被重新导入，想要可导入的记录请使用备份"/>
+   </div>
    <div class="settings-path"><input id="default-export" v-model="exportDirectory" @input="message=''" :disabled="disabled" placeholder="未设置，每次导出时选择" spellcheck="false"/><button type="button" class="secondary" :disabled="disabled" @click="choose('export')">选择文件夹</button><button type="button" class="text-button" :disabled="disabled||!exportDirectory" @click="exportDirectory='';message=''">清除</button></div>
   </section>
-  <div class="settings-actions"><button type="submit" class="primary" :disabled="disabled||!dirty">{{saving?'正在保存…':'保存设置'}}</button><button type="button" class="secondary" :disabled="disabled||!dirty" @click="reset">撤销修改</button><small>保存只记录路径，不会导入或扫描。</small></div>
+  <div class="settings-actions"><button type="submit" class="primary" :disabled="disabled||!dirty">{{saving?'正在保存…':'保存设置'}}</button><button type="button" class="secondary" :disabled="disabled||!dirty" @click="reset">撤销修改</button></div>
  </form>
  <section class="settings-records" aria-label="应用记录">
   <div class="records-actions"><button type="button" class="secondary" :disabled="disabled" @click="emit('exportRecords')">备份应用记录</button><HelpTip label="关于备份应用记录" text="导出 Qman 保存的媒体清单、观察历史和操作记录的数据和缓存，不包含图片、视频等原文件。目前仅支持导出，缓存指索引查询数据。"/></div>

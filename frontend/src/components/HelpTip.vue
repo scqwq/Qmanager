@@ -1,15 +1,24 @@
 <script setup lang="ts">
 import {nextTick,onUnmounted,ref,useId,watch} from 'vue'
 
-withDefaults(defineProps<{label:string;text:string;symbol?:string;circle?:boolean;tone?:string}>(),{symbol:'?',circle:true,tone:'muted'})
+const props=withDefaults(defineProps<{label:string;text:string;symbol?:string;circle?:boolean;tone?:string;activation?:'hover'|'click'|'both'}>(),{symbol:'?',circle:true,tone:'muted',activation:'both'})
 const id=useId(),open=ref(false),trigger=ref<HTMLButtonElement|null>(null),panel=ref<HTMLElement|null>(null)
 const position=ref({left:'0px',top:'0px'})
 let pinned=false,closeTimer:ReturnType<typeof setTimeout>|undefined
 function cancelClose(){if(closeTimer)clearTimeout(closeTimer)}
 function dismiss(){cancelClose();open.value=false;pinned=false}
 async function show(){cancelClose();open.value=true;await nextTick();place()}
-function leave(){cancelClose();if(!pinned&&document.activeElement!==trigger.value)closeTimer=setTimeout(dismiss,120)}
-function toggle(){if(pinned)dismiss();else{pinned=true;void show()}}
+function showPassive(){if(props.activation!=='click')void show()}
+function leave(){
+ cancelClose()
+ const focused=props.activation==='hover'?trigger.value?.matches(':focus-visible'):document.activeElement===trigger.value
+ if(!pinned&&!focused)closeTimer=setTimeout(dismiss,120)
+}
+function toggle(){
+ if(props.activation==='hover')return
+ if(pinned)dismiss()
+ else{pinned=true;void show()}
+}
 function place(){
  if(!trigger.value||!panel.value)return
  const anchor=trigger.value.getBoundingClientRect(),box=panel.value.getBoundingClientRect()
@@ -39,7 +48,7 @@ onUnmounted(()=>{cancelClose();listen(false)})
 
 <template>
  <span class="help-tip">
-  <button ref="trigger" type="button" class="help-trigger" :class="[tone,{'help-question':circle}]" :aria-label="label" :aria-describedby="open?id:undefined" :aria-expanded="open" @mouseenter="show" @mouseleave="leave" @focus="show" @blur="dismiss" @click="toggle">{{symbol}}</button>
+  <button ref="trigger" type="button" class="help-trigger" :class="[tone,{'help-question':circle}]" :aria-label="label" :aria-describedby="open?id:undefined" :aria-expanded="open" @mouseenter="showPassive" @mouseleave="leave" @focus="showPassive" @blur="dismiss" @click="toggle">{{symbol}}</button>
   <Teleport to="body"><span v-if="open" :id="id" ref="panel" role="tooltip" class="help-tooltip" :style="position" @mouseenter="cancelClose" @mouseleave="leave">{{text}}</span></Teleport>
  </span>
 </template>

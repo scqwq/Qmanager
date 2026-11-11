@@ -58,6 +58,9 @@ type Service struct {
 	qr                  *qrSession
 	folders             map[string]bool
 	files               map[string]chosenFile
+	folderChoice        folderChoice
+	folderAccount       string
+	folderStatus        FolderUploadStatus
 	cancel              context.CancelFunc
 	done                chan struct{}
 	closed              bool
@@ -119,7 +122,7 @@ func (s *Service) accept(ctx context.Context, c *Client, token string, g uint64)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || s.generation != g {
+	if s.closed || s.generation != g || s.activeLocked() {
 		return errors.New("本次登录已取消")
 	}
 	saved := savedSession{Token: token, UID: uid, Account: account}
@@ -130,6 +133,7 @@ func (s *Service) accept(ctx context.Context, c *Client, token string, g uint64)
 	s.uid = uid
 	s.qr = nil
 	s.files = map[string]chosenFile{}
+	s.folderChoice = folderChoice{}
 	s.folders = map[string]bool{"0": true}
 	s.status = Status{LoggedIn: true, Account: account, Remembered: true}
 	return nil
@@ -256,6 +260,7 @@ func (s *Service) Logout() error {
 	s.status = Status{}
 	s.folders = map[string]bool{"0": true}
 	s.files = map[string]chosenFile{}
+	s.folderChoice = folderChoice{}
 	return nil
 }
 func (s *Service) Folders(ctx context.Context, parent, next string) (FolderPage, error) {

@@ -231,33 +231,46 @@ func (p *progressReader) Read(b []byte) (int, error) {
 // Refuse existing names before initialization. The test page does not overwrite
 // objects, and does not assume undocumented collision-enum semantics.
 func (c *Client) ensureNameAbsent(ctx context.Context, parent int64, name string) error {
+	return c.walkChildren(ctx, parent, 100, func(f remoteFile) error {
+		if strings.EqualFold(f.Name, name) {
+			return errors.New("目标目录已有同名对象，请使用不同名称的测试文件")
+		}
+		return nil
+	})
+}
+
+func (c *Client) walkChildren(ctx context.Context, parent int64, pageLimit int, visit func(remoteFile) error) error {
 	next := "0"
-	for page := 0; page < 100; page++ {
+	seen := map[string]bool{}
+	for page := 0; page < pageLimit; page++ {
+		seen[next] = true
 		r, e := c.call(ctx, false, http.MethodGet, "/b/api/file/list/new", mapValues(parent, next), nil)
 		if e != nil {
 			return e
 		}
 		var d struct {
-			Next  string       `json:"Next"`
+			Next  *string      `json:"Next"`
 			Files []remoteFile `json:"InfoList"`
 		}
-		if json.Unmarshal(r.Data, &d) != nil {
+		if json.Unmarshal(r.Data, &d) != nil || d.Next == nil || d.Files == nil {
 			return errors.New("无法核对云端同名对象")
 		}
 		for _, f := range d.Files {
-			if !f.Trashed && strings.EqualFold(f.Name, name) {
-				return errors.New("目标目录已有同名对象，请使用不同名称的测试文件")
+			if !f.Trashed {
+				if e := visit(f); e != nil {
+					return e
+				}
 			}
 		}
-		if d.Next == "" || d.Next == "-1" {
+		if *d.Next == "" || *d.Next == "-1" {
 			return nil
 		}
-		if d.Next == next {
+		if seen[*d.Next] || len(*d.Next) > 80 {
 			return errors.New("目录核对分页未推进")
 		}
-		next = d.Next
+		next = *d.Next
 	}
-	return errors.New("目标目录过大，未完成同名核对，请选择较小的测试目录")
+	return errors.New("目标目录过大，未完成同名核对")
 }
 func (s *Service) upload(ctx context.Context, c *Client, parent int64, chosen chosenFile) (remoteFile, error) {
 	f, e := os.Open(chosen.path)
@@ -274,17 +287,30 @@ func (s *Service) upload(ctx context.Context, c *Client, parent int64, chosen ch
 	if e = c.ensureNameAbsent(ctx, parent, chosen.info.Name()); e != nil {
 		return remoteFile{}, e
 	}
-	h := md5.New()
-	pr := &progressReader{r: f, ctx: ctx, update: func(n int64) { s.progress("checking", n) }}
-	if _, e = io.CopyBuffer(h, pr, make([]byte, 256<<10)); e != nil {
+	digest, e := uploadDigest(ctx, f, func(n int64) { s.progress("checking", n) })
+	if e != nil {
 		return remoteFile{}, e
 	}
-	digest := hex.EncodeToString(h.Sum(nil))
-	if !sameFile(f, chosen.path, chosen.info) {
+	return c.sendFile(ctx, parent, f, chosen.info, digest, func() bool {
+		return sameFile(f, chosen.path, chosen.info)
+	}, s.progress)
+}
+
+func uploadDigest(ctx context.Context, f *os.File, update func(int64)) (string, error) {
+	h := md5.New()
+	pr := &progressReader{r: f, ctx: ctx, update: update}
+	if _, e := io.CopyBuffer(h, pr, make([]byte, 256<<10)); e != nil {
+		return "", e
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func (c *Client) sendFile(ctx context.Context, parent int64, f *os.File, info os.FileInfo, digest string, unchanged func() bool, progress func(string, int64)) (remoteFile, error) {
+	if !unchanged() {
 		return remoteFile{}, errors.New("内容检查期间文件发生变化，未开始上传")
 	}
-	s.progress("initializing", 0)
-	r, e := c.post(ctx, "/b/api/file/upload_request", map[string]any{"driveId": 0, "etag": digest, "fileName": chosen.info.Name(), "parentFileId": parent, "size": chosen.info.Size(), "type": 0, "duplicate": 1, "RequestSource": nil})
+	progress("initializing", 0)
+	r, e := c.post(ctx, "/b/api/file/upload_request", map[string]any{"driveId": 0, "etag": digest, "fileName": info.Name(), "parentFileId": parent, "size": info.Size(), "type": 0, "duplicate": 1, "RequestSource": nil})
 	if e != nil {
 		return remoteFile{}, e
 	}
@@ -304,12 +330,12 @@ func (s *Service) upload(ctx context.Context, c *Client, parent int64, chosen ch
 		if e != nil || partSize < 256<<10 || partSize > 256<<20 || init.ID <= 0 || init.Key == "" || init.Bucket == "" || init.UploadID == "" || init.StorageNode == "" {
 			return remoteFile{}, errors.New("上传初始化参数无法确认，未发送正文")
 		}
-		parts := (chosen.info.Size() + partSize - 1) / partSize
+		parts := (info.Size() + partSize - 1) / partSize
 		if parts > 10000 {
 			return remoteFile{}, errors.New("分片数量超过测试页限制")
 		}
 		for part := int64(1); part <= parts; part++ {
-			if !sameFile(f, chosen.path, chosen.info) {
+			if !unchanged() {
 				return remoteFile{}, errors.New("上传期间文件发生变化，已停止；云端部分内容需核对")
 			}
 			auth, e := c.post(ctx, "/b/api/file/s3_upload_object/auth", map[string]any{"bucket": init.Bucket, "key": init.Key, "partNumberStart": part, "partNumberEnd": part + 1, "uploadId": init.UploadID, "StorageNode": init.StorageNode})
@@ -328,8 +354,8 @@ func (s *Service) upload(ctx context.Context, c *Client, parent int64, chosen ch
 				return remoteFile{}, e
 			}
 			offset := (part - 1) * partSize
-			length := min(partSize, chosen.info.Size()-offset)
-			reader := &progressReader{r: io.NewSectionReader(f, offset, length), ctx: ctx, update: func(n int64) { s.progress("uploading", offset+n) }}
+			length := min(partSize, info.Size()-offset)
+			reader := &progressReader{r: io.NewSectionReader(f, offset, length), ctx: ctx, update: func(n int64) { progress("uploading", offset+n) }}
 			req, e := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), reader)
 			if e != nil {
 				return remoteFile{}, errors.New("无法准备分片上传")
@@ -354,11 +380,11 @@ func (s *Service) upload(ctx context.Context, c *Client, parent int64, chosen ch
 				return remoteFile{}, fmt.Errorf("分片传输未完成（HTTP %d），云端部分内容需核对", resp.StatusCode)
 			}
 		}
-		if !sameFile(f, chosen.path, chosen.info) {
+		if !unchanged() {
 			return remoteFile{}, errors.New("文件已变化，未提交完成登记；云端内容需核对")
 		}
-		s.progress("completing", chosen.info.Size())
-		complete, e := c.post(ctx, "/b/api/file/upload_complete/v2", map[string]any{"fileId": init.ID, "bucket": init.Bucket, "fileSize": chosen.info.Size(), "key": init.Key, "isMultipart": parts > 1, "uploadId": init.UploadID, "StorageNode": init.StorageNode})
+		progress("completing", info.Size())
+		complete, e := c.post(ctx, "/b/api/file/upload_complete/v2", map[string]any{"fileId": init.ID, "bucket": init.Bucket, "fileSize": info.Size(), "key": init.Key, "isMultipart": parts > 1, "uploadId": init.UploadID, "StorageNode": init.StorageNode})
 		if e != nil {
 			return remoteFile{}, e
 		}
@@ -373,15 +399,15 @@ func (s *Service) upload(ctx context.Context, c *Client, parent int64, chosen ch
 	if finalID <= 0 {
 		return remoteFile{}, errors.New("未取得最终文件编号，请到云盘核对")
 	}
-	s.progress("verifying", chosen.info.Size())
+	progress("verifying", info.Size())
 	file, e := c.info(ctx, finalID)
 	if e != nil {
 		return remoteFile{}, e
 	}
-	if file.Trashed || file.Type != 0 || file.Parent != parent || file.Name != chosen.info.Name() || file.Size != chosen.info.Size() || !strings.EqualFold(file.MD5, digest) {
+	if file.Trashed || file.Type != 0 || file.Parent != parent || file.Name != info.Name() || file.Size != info.Size() || !strings.EqualFold(file.MD5, digest) {
 		return remoteFile{}, errors.New("云端对象的名称、位置、大小或MD5核对不一致，请检查云盘")
 	}
-	if !sameFile(f, chosen.path, chosen.info) {
+	if !unchanged() {
 		return remoteFile{}, errors.New("本地文件已经变化，云端结果需重新核对")
 	}
 	return file, nil

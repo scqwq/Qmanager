@@ -23,6 +23,9 @@ func NativePath(path string) string {
 
 func OpenRelative(root, relative string) (*os.File, error) { return openRead(root, relative) }
 
+// FileIdentity reads the platform file identifier from an already opened handle.
+func FileIdentity(f *os.File) string { return fileIdentity(f) }
+
 // Presence checks only a fixed, already-selected path, without reading content.
 // A present path/length is not a content hash or original-instance assertion.
 func Presence(root, relative string, expectedBytes int64) string {

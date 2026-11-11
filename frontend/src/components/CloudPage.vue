@@ -1,16 +1,28 @@
 <script setup lang="ts">
 import {computed,nextTick,onMounted,onUnmounted,ref} from 'vue'
-import {api,type CloudFolder,type CloudLocalFile,type CloudQR,type CloudStatus} from '../api'
+import {api,type CloudFolder,type CloudFolderUpload,type CloudLocalFile,type CloudLocalFolder,type CloudQR,type CloudStatus} from '../api'
 import FeedbackNotice from './FeedbackNotice.vue'
 import {cloudErrorFeedback as errorFeedback} from '../cloudFeedback'
 import CloudFolderPicker from './CloudFolderPicker.vue'
+import CloudFolderUploadResult from './CloudFolderUploadResult.vue'
+import OperationPrompt from './OperationPrompt.vue'
 defineProps<{backupUploadHint?:boolean}>()
 const emit=defineEmits<{back:[]}>()
 const status=ref<CloudStatus>({logged_in:false,account:'',needs_check:false,remembered:false,note:'',upload:{id:'',phase:'',name:'',total:0,done:0,detail:'',remote_id:''}})
 const loginModes = [{id:'qr',name:'扫码'},{id:'password',name:'账号密码'}] as const
 const mode=ref<(typeof loginModes)[number]['id']>('qr'),working=ref(false),error=ref(''),message=ref(''),qr=ref<CloudQR|null>(null),qrState=ref(''),account=ref(''),password=ref('')
 const trail=ref<CloudFolder[]>([{id:'0',name:'我的文件'}]),picker=ref(false),folderForm=ref(false),folderName=ref(''),localFile=ref<CloudLocalFile|null>(null),nameInput=ref<HTMLInputElement|null>(null)
-const uploading=computed(()=>['checking','initializing','uploading','completing','verifying'].includes(status.value.upload.phase))
+const localFolder=ref<CloudLocalFolder|null>(null),folderTask=ref<CloudFolderUpload|null>(null)
+const showFolderResult=ref(false),confirmAbandon=ref(false)
+let observedFolderID=''
+const fileUploading=computed(()=>['checking','initializing','uploading','completing','verifying'].includes(status.value.upload.phase))
+const folderUploading=computed(()=>folderTask.value?.phase==='running')
+const folderPaused=computed(()=>folderTask.value?.phase==='paused')
+const uploading=computed(()=>fileUploading.value||folderUploading.value)
+const folderProcessed=computed(()=>{
+ const task=folderTask.value
+ return task?task.uploaded+task.skipped+task.failed:0
+})
 const target=computed(()=>trail.value[trail.value.length-1]),targetPath=computed(()=>trail.value.map(f=>f.name).join(' / '))
 const phaseNames:Record<string,string>={checking:'检查文件',initializing:'准备上传',uploading:'上传中',completing:'完成登记',verifying:'核对结果',complete:'上传完成',failed:'上传未完成',cancelled:'已取消'}
 const qrLabels:Record<string,string>={waiting:'等待扫码',scanned:'已扫码，请在手机确认',expired:'二维码已过期',rejected:'已取消扫码'}
@@ -21,20 +33,72 @@ let disposed=false,qrTimer:ReturnType<typeof setTimeout>|undefined,statusTimer:R
 function notify(text:string){message.value=text;if(messageTimer)clearTimeout(messageTimer);messageTimer=setTimeout(()=>message.value='',8000)}
 function stopQR(){if(qrTimer)clearTimeout(qrTimer);qrTimer=undefined}
 function qrImageError(){stopQR();qr.value=null;qrState.value='';error.value='二维码图像未能加载，请刷新二维码'}
-async function syncStatus(){const value=await api().GetCloudStatus();if(disposed)return;if(status.value.logged_in&&!value.logged_in){trail.value=[{id:'0',name:'我的文件'}];localFile.value=null;folderForm.value=false;picker.value=false}status.value=value}
+async function syncStatus(){
+ const value=await api().GetCloudStatus()
+ if(disposed)return
+ if(status.value.logged_in&&!value.logged_in){
+  trail.value=[{id:'0',name:'我的文件'}]
+  localFile.value=null;localFolder.value=null;folderForm.value=false;picker.value=false
+ }
+ status.value=value
+ const task=value.logged_in?await api().GetCloudFolderUpload():null
+ if(disposed)return
+ folderTask.value=task?.id?task:null
+ if(task?.phase==='running')observedFolderID=task.id
+ if(task?.id&&task.id===observedFolderID&&task.phase!=='running'){
+  observedFolderID=''
+  if(task.phase==='complete')showFolderResult.value=true
+ }
+}
 async function run(action:()=>Promise<void>){if(working.value)return;working.value=true;error.value='';message.value='';try{await action()}catch(e){if(!disposed){error.value=String(e);await syncStatus().catch(()=>{})}}finally{if(!disposed)working.value=false}}
 async function fetchQR(){stopQR();qr.value=null;qrState.value='';const g=modeGeneration;const value=await api().GetCloudQRCode();if(disposed||g!==modeGeneration||mode.value!=='qr')return;qr.value=value;qrState.value='waiting';scheduleQR(value.id,g)}
-function scheduleQR(id:string,g:number){qrTimer=setTimeout(async()=>{if(disposed||g!==modeGeneration||mode.value!=='qr')return;try{const result=await api().PollCloudQRCode(id);if(disposed||g!==modeGeneration)return;qrState.value=result.state;status.value=result.status;if(result.state==='logged_in'){qr.value=null;return}if(['waiting','scanned'].includes(result.state))scheduleQR(id,g)}catch(e){if(!disposed&&g===modeGeneration){error.value=String(e);qrState.value='';}}},1500)}
+function scheduleQR(id:string,g:number){qrTimer=setTimeout(async()=>{if(disposed||g!==modeGeneration||mode.value!=='qr')return;try{const result=await api().PollCloudQRCode(id);if(disposed||g!==modeGeneration)return;qrState.value=result.state;status.value=result.status;if(result.state==='logged_in'){qr.value=null;await syncStatus();return}if(['waiting','scanned'].includes(result.state))scheduleQR(id,g)}catch(e){if(!disposed&&g===modeGeneration){error.value=String(e);qrState.value='';}}},1500)}
 async function changeMode(value:typeof mode.value){if(working.value)return;stopQR();modeGeneration++;mode.value=value;qr.value=null;qrState.value='';password.value='';error.value='';message.value='';await api().CancelCloudQRCode();if(value==='qr')await run(fetchQR)}
-async function refreshLogin(){await run(async()=>{const value=await api().RefreshCloudLogin();if(disposed)return;status.value=value;if(uploading.value)scheduleStatus();if(!value.logged_in&&!value.needs_check&&mode.value==='qr')await fetchQR()})}
+async function refreshLogin(){await run(async()=>{await api().RefreshCloudLogin();await syncStatus();if(disposed)return;if(uploading.value)scheduleStatus();if(!status.value.logged_in&&!status.value.needs_check&&mode.value==='qr')await fetchQR()})}
 async function loginPassword(){await run(async()=>{try{await api().LoginCloudPassword(account.value.trim(),password.value);await syncStatus()}finally{password.value=''}})}
-async function logout(){await run(async()=>{await api().LogoutCloud();trail.value=[{id:'0',name:'我的文件'}];localFile.value=null;await syncStatus();mode.value='qr';modeGeneration++;await fetchQR()})}
+async function logout(){await run(async()=>{await api().LogoutCloud();trail.value=[{id:'0',name:'我的文件'}];localFile.value=null;localFolder.value=null;observedFolderID='';await syncStatus();mode.value='qr';modeGeneration++;await fetchQR()})}
 function chooseTarget(value:CloudFolder[]){trail.value=value;picker.value=false;error.value='';message.value=''}
 async function folderLoginRequired(){picker.value=false;await syncStatus();error.value=status.value.note||'云盘登录已失效，请重新登录'}
 async function newFolder(){error.value='';message.value='';folderName.value='';folderForm.value=true;await nextTick();nameInput.value?.focus()}
 async function createFolder(){await run(async()=>{const f=await api().CreateCloudFolder(target.value.id,folderName.value.trim());if(disposed)return;folderForm.value=false;notify(`已新建文件夹“${f.name}”`)})}
-async function chooseFile(){await run(async()=>{const f=await api().ChooseCloudFile();if(!disposed&&f.ticket)localFile.value=f})}
+async function chooseFile(){await run(async()=>{const f=await api().ChooseCloudFile();if(!disposed&&f.ticket){localFolder.value=null;localFile.value=f}})}
 async function startUpload(){if(!localFile.value)return;await run(async()=>{await api().StartCloudUpload(target.value.id,localFile.value!.ticket);localFile.value=null;await syncStatus();scheduleStatus()})}
+async function chooseUploadFolder(){
+ await run(async()=>{
+  const folder=await api().ChooseCloudUploadFolder()
+  if(!disposed&&folder.ticket){localFile.value=null;localFolder.value=folder}
+ })
+}
+async function startFolderUpload(){
+ const folder=localFolder.value
+ if(!folder)return
+ await run(async()=>{
+  await api().StartCloudFolderUpload(target.value.id,folder.ticket)
+  observedFolderID=folder.ticket
+  localFolder.value=null
+  await syncStatus()
+  scheduleStatus()
+ })
+}
+async function resumeFolderUpload(){
+ const task=folderTask.value
+ if(!task)return
+ await run(async()=>{
+  await api().ResumeCloudFolderUpload(task.id)
+  observedFolderID=task.id
+  await syncStatus()
+  scheduleStatus()
+ })
+}
+async function abandonFolderUpload(confirmed:boolean){
+ confirmAbandon.value=false
+ const task=folderTask.value
+ if(!confirmed||!task)return
+ await run(async()=>{
+  await api().AbandonCloudFolderUpload(task.id)
+  await syncStatus()
+ })
+}
 function scheduleStatus(){if(statusTimer)clearTimeout(statusTimer);statusTimer=setTimeout(async()=>{if(disposed)return;try{await syncStatus();if(uploading.value)scheduleStatus()}catch(e){error.value=String(e)}},800)}
 function folderKeys(e:KeyboardEvent){if(e.key==='Escape'&&!working.value){e.preventDefault();folderForm.value=false}if(e.key==='Tab'){const root=(e.currentTarget as HTMLElement),els=Array.from(root.querySelectorAll<HTMLElement>('input:not([disabled]),button:not([disabled])'));const first=els[0],last=els[els.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}}}
 onMounted(()=>{void refreshLogin()})
@@ -42,7 +106,7 @@ onUnmounted(()=>{disposed=true;modeGeneration++;stopQR();if(statusTimer)clearTim
 </script>
 <template>
 <section class="cloud-page" aria-labelledby="cloud-title">
- <div :inert="picker||folderForm">
+ <div :inert="picker||folderForm||confirmAbandon">
  <button type="button" class="text-button logs-back" @click="emit('back')"><span aria-hidden="true">‹</span> 返回设置</button>
  <div class="cloud-heading"><h2 id="cloud-title">云盘登录</h2><button v-if="status.logged_in" type="button" class="text-button" :disabled="working||uploading" @click="logout">退出登录</button></div>
  <p v-if="backupUploadHint" class="notice" role="status">{{status.logged_in?'返回备份历史即可上传。':'登录后请返回备份历史上传。'}}</p>
@@ -67,18 +131,52 @@ onUnmounted(()=>{disposed=true;modeGeneration++;stopQR();if(statusTimer)clearTim
  <template v-else>
   <p class="cloud-account">已登录 · {{status.account}}</p>
   <div class="cloud-target"><span class="cloud-target-path">当前操作目录：{{targetPath}}</span><button type="button" class="secondary" :disabled="working||uploading" @click="picker=true">选择目录</button></div>
-  <div class="cloud-actions"><button type="button" class="secondary" :disabled="working||uploading" @click="newFolder">新建文件夹</button><button type="button" class="primary" :disabled="working||uploading" @click="chooseFile">上传文件</button></div>
+  <div class="cloud-actions">
+   <button type="button" class="secondary" :disabled="working||uploading" @click="newFolder">新建文件夹</button>
+   <button type="button" class="primary" :disabled="working||uploading" @click="chooseFile">上传文件</button>
+   <button type="button" class="secondary" :disabled="working||uploading||folderPaused" @click="chooseUploadFolder">上传文件夹</button>
+  </div>
   <div v-if="localFile" class="cloud-file-choice"><div><strong>{{localFile.name}}</strong><span>{{bytes(localFile.bytes)}}</span></div><button type="button" class="primary" :disabled="working||uploading" @click="startUpload">开始上传</button><button type="button" class="text-button" :disabled="working||uploading" @click="localFile=null">取消选择</button></div>
+  <div v-if="localFolder" class="cloud-file-choice">
+   <div>
+    <strong>{{localFolder.name}}</strong>
+    <span>{{localFolder.files}} 个文件<template v-if="localFolder.batches"> · {{localFolder.batches}} 批</template> · 同名文件跳过<template v-if="localFolder.issues"> · {{localFolder.issues}} 项无法上传</template></span>
+   </div>
+   <button type="button" class="primary" :disabled="working||uploading" @click="startFolderUpload">开始上传</button>
+   <button type="button" class="text-button" :disabled="working||uploading" @click="localFolder=null">取消选择</button>
+  </div>
+  <section v-if="folderTask" class="cloud-upload" aria-label="文件夹上传">
+   <div class="cloud-heading">
+    <h3 class="cloud-upload-name">{{folderTask.name}}</h3>
+    <button v-if="folderUploading" type="button" class="text-button" :disabled="working" @click="run(()=>api().CancelCloudUpload())">暂停上传</button>
+    <button v-else type="button" class="text-button" @click="showFolderResult=true">查看结果</button>
+   </div>
+   <template v-if="folderUploading">
+    <progress :value="folderProcessed" :max="Math.max(1,folderTask.total)" aria-label="文件夹上传进度"/>
+    <p class="cloud-muted" role="status"><template v-if="folderTask.batch">第 {{folderTask.batch}} / {{folderTask.batches}} 批 · </template>{{folderProcessed}} / {{folderTask.total}} 个文件</p>
+    <p v-if="folderTask.current&&folderTask.current!=='.'" class="cloud-upload-name">{{phaseNames[folderTask.step]}} · {{folderTask.current}}</p>
+   </template>
+   <template v-else-if="folderPaused">
+    <p class="cloud-upload-name">{{folderTask.detail}}</p>
+    <div class="cloud-actions">
+     <button type="button" class="primary" :disabled="working||uploading" @click="resumeFolderUpload">继续上传</button>
+     <button type="button" class="text-button" :disabled="working||uploading" @click="confirmAbandon=true">结束任务</button>
+    </div>
+   </template>
+   <p v-else class="cloud-muted">{{folderTask.phase==='abandoned'?'任务已结束':'处理完成'}} · 已上传 {{folderTask.uploaded}} 个文件</p>
+  </section>
  </template>
- <section v-if="status.upload.id" class="cloud-upload" aria-label="上传任务">
-  <div class="cloud-heading"><h3>{{phaseNames[status.upload.phase]||status.upload.phase}}</h3><button v-if="uploading" type="button" class="text-button" @click="api().CancelCloudUpload()">取消上传</button></div>
+ <section v-if="status.upload.id&&!folderUploading" class="cloud-upload" aria-label="上传任务">
+  <div class="cloud-heading"><h3>{{phaseNames[status.upload.phase]||status.upload.phase}}</h3><button v-if="fileUploading" type="button" class="text-button" @click="api().CancelCloudUpload()">取消上传</button></div>
   <p class="cloud-upload-name">{{status.upload.name}}</p>
-  <template v-if="uploading"><progress :value="progress" max="100" :aria-label="phaseNames[status.upload.phase]"/><p class="cloud-muted" role="status">{{bytes(status.upload.done)}} / {{bytes(status.upload.total)}}</p></template>
+  <template v-if="fileUploading"><progress :value="progress" max="100" :aria-label="phaseNames[status.upload.phase]"/><p class="cloud-muted" role="status">{{bytes(status.upload.done)}} / {{bytes(status.upload.total)}}</p></template>
   <FeedbackNotice v-if="status.upload.phase==='failed'" :feedback="errorFeedback(status.upload.detail)"/>
   <p v-else-if="status.upload.detail" :class="status.upload.phase==='complete'?'notice success':'notice'" role="status">{{status.upload.detail}}</p>
  </section>
  </div>
  <CloudFolderPicker v-if="picker" :trail="trail" @close="picker=false" @select="chooseTarget" @login-required="folderLoginRequired"/>
+ <CloudFolderUploadResult v-if="showFolderResult&&folderTask" :task="folderTask" @close="showFolderResult=false"/>
+ <OperationPrompt v-if="confirmAbandon" title="结束上传任务？" message="剩余文件将停止上传，已上传文件保留在云端。" confirm="结束任务" @close="abandonFolderUpload"/>
  <div v-if="folderForm" class="modal-backdrop" @click.self="!working&&(folderForm=false)"><form class="cloud-folder-dialog cloud-name-dialog" role="dialog" aria-modal="true" aria-labelledby="cloud-name-title" @submit.prevent="createFolder" @keydown="folderKeys"><h2 id="cloud-name-title">新建文件夹</h2><label for="cloud-folder-name">名称</label><input id="cloud-folder-name" ref="nameInput" v-model="folderName" maxlength="254" :disabled="working"/><FeedbackNotice v-if="error" :feedback="errorFeedback(error)"/><div class="modal-actions"><button type="button" class="secondary" :disabled="working" @click="folderForm=false">取消</button><button type="submit" class="primary" :disabled="working||!folderName.trim()">{{working?'正在创建…':'创建'}}</button></div></form></div>
 </section>
 </template>

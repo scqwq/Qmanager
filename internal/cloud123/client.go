@@ -214,6 +214,10 @@ func (c *Client) mkdir(ctx context.Context, parent int64, name string) (Folder, 
 	if e := c.ensureNameAbsent(ctx, parent, name); e != nil {
 		return Folder{}, e
 	}
+	return c.createFolder(ctx, parent, name)
+}
+
+func (c *Client) createFolder(ctx context.Context, parent int64, name string) (Folder, error) {
 	r, e := c.post(ctx, "/b/api/file/upload_request", map[string]any{"driveId": 0, "etag": "", "fileName": name, "parentFileId": parent, "size": 0, "type": 1, "duplicate": 1, "NotReuse": true, "RequestSource": nil})
 	if e != nil {
 		return Folder{}, e

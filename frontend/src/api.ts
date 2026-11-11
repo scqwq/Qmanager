@@ -110,12 +110,21 @@ export interface CloudFolder {id:string;name:string}
 export interface CloudFolderPage {folders:CloudFolder[];next:string;more:boolean}
 export interface CloudQR {id:string;image:string;expires_at:string}
 export interface CloudLocalFile {ticket:string;name:string;bytes:number}
+export interface CloudLocalFolder {ticket:string;name:string;files:number;batches:number;issues:number}
+export interface CloudFolderUpload {
+ id:string;name:string;phase:'running'|'paused'|'complete'|'abandoned'|'';detail:string;current:string;step:string;
+ total:number;uploaded:number;skipped:number;failed:number;batch:number;batches:number;issues:number;
+}
+export interface CloudFolderUploadIssue {path:string;state:'skipped'|'failed';detail:string}
 interface CloudBridge {
  GetCloudStatus():Promise<CloudStatus>;RefreshCloudLogin():Promise<CloudStatus>;GetCloudQRCode():Promise<CloudQR>;
  PollCloudQRCode(id:string):Promise<{state:string;status:CloudStatus}>;CancelCloudQRCode():Promise<void>;
  LoginCloudPassword(account:string,password:string):Promise<void>;LogoutCloud():Promise<void>;
  ListCloudFolders(parent:string,next:string):Promise<CloudFolderPage>;CreateCloudFolder(parent:string,name:string):Promise<CloudFolder>;
  ChooseCloudFile():Promise<CloudLocalFile>;StartCloudUpload(parent:string,ticket:string):Promise<void>;CancelCloudUpload():Promise<void>;
+ ChooseCloudUploadFolder():Promise<CloudLocalFolder>;StartCloudFolderUpload(parent:string,ticket:string):Promise<void>;
+ GetCloudFolderUpload():Promise<CloudFolderUpload>;GetCloudFolderUploadIssues(id:string,offset:number):Promise<CloudFolderUploadIssue[]>;
+ ResumeCloudFolderUpload(id:string):Promise<void>;AbandonCloudFolderUpload(id:string):Promise<void>;
 }
 interface Bridge extends CloudBridge {
  InspectBackupRecord(id:string,explicit:boolean):Promise<BackupRecord>

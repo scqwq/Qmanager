@@ -42,3 +42,34 @@ func (a *App) StartCloudUpload(parent, ticket string) error {
 	return a.cloud.StartUpload(parent, ticket)
 }
 func (a *App) CancelCloudUpload() { a.cloud.CancelUpload() }
+
+func (a *App) ChooseCloudUploadFolder() (cloud123.LocalFolder, error) {
+	if !a.cloud.Status().LoggedIn {
+		return cloud123.LocalFolder{}, errors.New("请先登录云盘")
+	}
+	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择要上传到 123 云盘的文件夹"})
+	if err != nil || path == "" {
+		return cloud123.LocalFolder{}, err
+	}
+	return a.cloud.SelectFolder(a.ctx, path)
+}
+
+func (a *App) StartCloudFolderUpload(parent, ticket string) error {
+	return a.cloud.StartFolderUpload(parent, ticket)
+}
+
+func (a *App) GetCloudFolderUpload() (cloud123.FolderUploadStatus, error) {
+	return a.cloud.FolderUploadStatus()
+}
+
+func (a *App) GetCloudFolderUploadIssues(id string, offset int) ([]cloud123.FolderUploadIssue, error) {
+	return a.cloud.FolderUploadIssues(id, offset)
+}
+
+func (a *App) ResumeCloudFolderUpload(id string) error {
+	return a.cloud.ResumeFolderUpload(id)
+}
+
+func (a *App) AbandonCloudFolderUpload(id string) error {
+	return a.cloud.AbandonFolderUpload(id)
+}

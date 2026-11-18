@@ -15,10 +15,15 @@ import (
 	"qqarchive/internal/media"
 )
 
-type ZIPVerification struct {
+type ZIPMetadata struct {
 	Manifest Manifest
 	Bytes    []byte
 	Info     os.FileInfo
+}
+
+type ZIPVerification struct {
+	ZIPMetadata
+	verified bool
 }
 
 func inspectZIP(ctx context.Context, input io.ReaderAt, size int64) (map[string]*zip.File, uint64, error) {
@@ -99,22 +104,32 @@ func verifyZIPTree(names map[string]*zip.File, m Manifest) (treeSet, error) {
 
 // VerifyZIP checks the complete package and keeps the payload inside the archive.
 func VerifyZIP(ctx context.Context, path string) (ZIPVerification, error) {
+	metadata, err := readZIP(ctx, path, true)
+	return ZIPVerification{ZIPMetadata: metadata, verified: err == nil}, err
+}
+
+// PreviewZIP reads the archive directory and manifest without reading media payloads.
+func PreviewZIP(ctx context.Context, path string) (ZIPMetadata, error) {
+	return readZIP(ctx, path, false)
+}
+
+func readZIP(ctx context.Context, path string, verify bool) (ZIPMetadata, error) {
 	path, err := media.Canonical(path)
 	if err != nil {
-		return ZIPVerification{}, err
+		return ZIPMetadata{}, err
 	}
 	input, err := media.OpenRelative(filepath.Dir(path), filepath.Base(path))
 	if err != nil {
-		return ZIPVerification{}, err
+		return ZIPMetadata{}, err
 	}
 	defer input.Close()
 	info, err := input.Stat()
 	if err != nil || !info.Mode().IsRegular() {
-		return ZIPVerification{}, errors.New("备份ZIP不是可读的普通文件")
+		return ZIPMetadata{}, errors.New("备份ZIP不是可读的普通文件")
 	}
 	names, _, err := inspectZIP(ctx, input, info.Size())
 	if err != nil {
-		return ZIPVerification{}, err
+		return ZIPMetadata{}, err
 	}
 	m, err := decodeMetadata(ctx, func(name string, limit int64) (io.ReadCloser, error) {
 		entry := names[name]
@@ -124,12 +139,29 @@ func VerifyZIP(ctx context.Context, path string) (ZIPVerification, error) {
 		return entry.Open()
 	})
 	if err != nil {
-		return ZIPVerification{}, err
+		return ZIPMetadata{}, err
 	}
 	tree, err := verifyZIPTree(names, m)
 	if err != nil {
-		return ZIPVerification{}, err
+		return ZIPMetadata{}, err
 	}
+	if verify {
+		if err := verifyZIPPayload(ctx, names, tree); err != nil {
+			return ZIPMetadata{}, err
+		}
+	}
+	current, err := os.Lstat(path)
+	if err != nil || !sameZIP(info, current) {
+		return ZIPMetadata{}, errors.New("备份ZIP在核对期间已移动或变化")
+	}
+	b, err := json.Marshal(m)
+	if err != nil || len(b) > maxIndex {
+		return ZIPMetadata{}, errors.New("备份历史证据超过容量上限")
+	}
+	return ZIPMetadata{Manifest: m, Bytes: b, Info: info}, nil
+}
+
+func verifyZIPPayload(ctx context.Context, names map[string]*zip.File, tree treeSet) error {
 	buffer := make([]byte, 1024*1024)
 	digest := sha256.New()
 	for name, expected := range tree.Files {
@@ -137,31 +169,27 @@ func VerifyZIP(ctx context.Context, path string) (ZIPVerification, error) {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
-			return ZIPVerification{}, err
+			return err
 		}
 		entry, err := names[name].Open()
 		if err != nil {
-			return ZIPVerification{}, err
+			return err
 		}
 		digest.Reset()
 		n, err := io.CopyBuffer(digest, media.CancelReader{Ctx: ctx, Reader: io.LimitReader(entry, expected.Size+1)}, buffer)
 		entry.Close()
 		if err != nil {
-			return ZIPVerification{}, err
+			return err
 		}
 		if n != expected.Size || hex.EncodeToString(digest.Sum(nil)) != expected.Hash {
-			return ZIPVerification{}, errors.New("ZIP载荷长度或SHA-256不符")
+			return errors.New("ZIP载荷长度或SHA-256不符")
 		}
 	}
-	current, err := os.Lstat(path)
-	if err != nil || !sameZIP(info, current) {
-		return ZIPVerification{}, errors.New("备份ZIP在校验期间已移动或变化")
-	}
-	b, err := json.Marshal(m)
-	if err != nil || len(b) > maxIndex {
-		return ZIPVerification{}, errors.New("备份历史证据超过容量上限")
-	}
-	return ZIPVerification{Manifest: m, Bytes: b, Info: info}, nil
+	return nil
+}
+
+func (v ZIPVerification) Matches(info os.FileInfo) bool {
+	return v.verified && v.Info != nil && info != nil && sameZIP(v.Info, info)
 }
 
 func sameZIP(before, after os.FileInfo) bool {

@@ -23,6 +23,12 @@ func NativePath(path string) string {
 
 func OpenRelative(root, relative string) (*os.File, error) { return openRead(root, relative) }
 
+// OpenRelativeWithoutWriters pins a path and denies writes on Windows while
+// keeping rename and deletion available to the caller.
+func OpenRelativeWithoutWriters(root, relative string) (*os.File, error) {
+	return openReadWithoutWriters(root, relative)
+}
+
 // FileIdentity reads the platform file identifier from an already opened handle.
 func FileIdentity(f *os.File) string { return fileIdentity(f) }
 

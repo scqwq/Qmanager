@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"qqarchive/internal/catalog"
-	"qqarchive/internal/diagnostics"
 	"qqarchive/internal/media"
 	"qqarchive/internal/mediabackup"
 	"qqarchive/internal/storage"
@@ -144,7 +143,7 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 	// observation: pending files still need their later stability checks.
 	budget := estimate.EstimatedPeak
 	if format == "zip" {
-		budget *= 3
+		budget *= 2
 	}
 	free, err := storage.Free(target)
 	if err != nil || free < uint64(budget) {
@@ -197,8 +196,11 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 			s.mu.Unlock()
 			result, err = mediabackup.Build(ctx, source, items, f, target, protected, s.catalog.History, func(n int, b int64) { s.mu.Lock(); s.state.Scanned = n; s.state.Bytes = b; s.mu.Unlock() }, options)
 		}
+		var verifiedZIP mediabackup.ZIPVerification
 		if err == nil && format == "zip" {
-			zipPath, e := mediabackup.ZipDirectory(ctx, result.Path)
+			zipPath := result.Path + ".zip"
+			var e error
+			verifiedZIP, e = mediabackup.WriteVerifiedZIP(ctx, result.Path, zipPath)
 			if e == nil {
 				// The directory was freshly created by this job. Only delete its
 				// validated object set after the independent ZIP is complete.
@@ -216,13 +218,24 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 			}
 		}
 		if result.Path != "" {
-			row, e := s.registerBackup(context.WithoutCancel(ctx), result.Path)
+			var row catalog.BackupRecord
+			var e error
+			if verifiedZIP.Info == nil {
+				row, e = s.inspectBackupPackage(context.WithoutCancel(ctx), result.Path, false)
+			} else {
+				info, statErr := os.Lstat(result.Path)
+				if statErr != nil || !verifiedZIP.Matches(info) {
+					e = errors.New("ZIP 在登记前已移动或变化")
+				} else {
+					row, e = backupRecordFromManifest(result.Path, "zip", info.Size(), verifiedZIP.Manifest, verifiedZIP.Bytes)
+				}
+			}
 			if e == nil {
 				row.SelectedOnly = request != nil
 				row.OriginalFiles = &catalog.BackupFileStatus{State: "present", CheckedAt: time.Now().UTC(), Total: result.Files, Present: result.Files}
-				if saveErr := s.catalog.SaveBackup(row); saveErr != nil {
-					diagnostics.Record(ctx, "error", "backup.presence_write_failed", "未能保存初始源文件状态")
-				}
+				e = s.catalog.SaveBackup(row)
+			}
+			if e == nil {
 				s.backupEvent(row, "创建备份", fmt.Sprintf("保存 %d 个文件 · 排除 %d 项", result.Files, result.Excluded))
 			} else if err == nil {
 				err = errors.New("备份已保存，但登记失败；请保留产物并重新加载")

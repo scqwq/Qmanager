@@ -17,5 +17,8 @@ func openRead(root, relative string) (*os.File, error) {
 	}
 	return os.Open(p)
 }
+func openReadWithoutWriters(root, relative string) (*os.File, error) {
+	return openRead(root, relative)
+}
 func createdAt(os.FileInfo) *time.Time { return nil }
 func fileIdentity(*os.File) string     { return "" }

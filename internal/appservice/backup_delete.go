@@ -164,7 +164,11 @@ func (s *Media) deleteBackup(ctx context.Context, row *catalog.BackupRecord, pro
 		}
 	}
 	if row.DeletePath == "" {
-		pinned, e := media.OpenRelative(filepath.Dir(path), filepath.Base(path))
+		open := media.OpenRelative
+		if row.Format == "zip" {
+			open = media.OpenRelativeWithoutWriters
+		}
+		pinned, e := open(filepath.Dir(path), filepath.Base(path))
 		if os.IsNotExist(e) {
 			if e = accessibleBackupParent(path); e != nil {
 				return e
@@ -183,14 +187,30 @@ func (s *Media) deleteBackup(ctx context.Context, row *catalog.BackupRecord, pro
 		if row.Format == "directory" && !info.IsDir() || row.Format == "zip" && !info.Mode().IsRegular() {
 			return errors.New("备份位置对象类型已变化，请重新定位并校验")
 		}
-		pack, e := mediabackup.OpenPackage(ctx, path, filepath.Join(s.private, "temporary"), nil)
-		if e != nil {
-			return e
+		var verified mediabackup.ZIPVerification
+		var digest string
+		if row.Format == "zip" {
+			verified, e = mediabackup.VerifyZIP(ctx, path)
+			if e != nil {
+				return e
+			}
+			if !verified.Matches(info) {
+				return errors.New("ZIP在删除准备时变化，已停止")
+			}
+			digest = catalog.ManifestDigest(verified.Bytes)
+		} else {
+			pack, e := mediabackup.OpenPackage(ctx, path, filepath.Join(s.private, "temporary"), nil)
+			if e != nil {
+				return e
+			}
+			digest = catalog.ManifestDigest(pack.Bytes)
+			pack.Cleanup()
 		}
-		digest := catalog.ManifestDigest(pack.Bytes)
-		pack.Cleanup()
 		if digest != row.Digest {
 			return errors.New("文件与历史记录身份不符，拒绝删除")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		row.DeletePath = filepath.Join(filepath.Dir(path), ".qman-delete-"+rand.Text())
 		row.Status = "deleting"
@@ -202,6 +222,10 @@ func (s *Media) deleteBackup(ctx context.Context, row *catalog.BackupRecord, pro
 			return e
 		}
 		defer parent.Close()
+		current, e := parent.Lstat(filepath.Base(path))
+		if e != nil || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(info, current) {
+			return errors.New("备份位置在删除准备时变化，已停止")
+		}
 		// Quarantine only within this exact parent; no recursive path deletion.
 		if e = parent.Rename(filepath.Base(path), filepath.Base(row.DeletePath)); e != nil {
 			row.DeletePath = ""
@@ -210,6 +234,9 @@ func (s *Media) deleteBackup(ctx context.Context, row *catalog.BackupRecord, pro
 		moved, e := parent.Lstat(filepath.Base(row.DeletePath))
 		if e != nil || !os.SameFile(info, moved) {
 			return errors.New("备份位置在删除准备时变化，已停止")
+		}
+		if row.Format == "zip" {
+			return mediabackup.DeleteVerifiedZIP(ctx, *row, verified)
 		}
 	}
 	if !strings.HasPrefix(filepath.Base(row.DeletePath), ".qman-delete-") {

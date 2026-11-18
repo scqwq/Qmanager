@@ -66,6 +66,7 @@ interface Bridge {
  // Backup history and restore
  GetBackupHistory():Promise<BackupRecord[]>
  InspectLocalBackupRecord(id:string):Promise<BackupRecord>
+ VerifyBackupRecord(id:string):Promise<BackupRecord>
  OpenBackupLocation(id:string):Promise<void>
  CheckBackupOriginals(id:string):Promise<void>
  ChooseBackup(expectedID:string):Promise<BackupPreview|null>

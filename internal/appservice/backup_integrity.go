@@ -44,21 +44,15 @@ func (s *Media) verifyBackupLocation(ctx context.Context, row *catalog.BackupRec
 		} else {
 			before, statErr := pinned.Stat()
 			pinned.Close()
-			pack, checkErr := mediabackup.OpenPackage(ctx, path, filepath.Join(s.private, "temporary"), nil)
-			if pack != nil {
-				if catalog.ManifestDigest(pack.Bytes) != row.Digest {
-					checkErr = errors.New("备份与登记清单不符")
-				}
-				pack.Cleanup()
-			}
+			checkErr := s.verifyRegisteredPackage(ctx, path, *row)
 			current, currentErr := os.Lstat(path)
 			var ioErr *os.PathError
 			switch {
 			case ctx.Err() != nil || statErr != nil || currentErr != nil || !os.SameFile(before, current) ||
 				before.Size() != current.Size() || !before.ModTime().Equal(current.ModTime()):
 				row.LocalState, row.LocalDetail = "unavailable", "本次未能完成备份校验"
-			case (errors.As(checkErr, &ioErr) && !errors.Is(checkErr, os.ErrNotExist)) || errors.Is(checkErr, mediabackup.ErrPackageSpace):
-				row.LocalState, row.LocalDetail = "unavailable", "备份暂不可读取或校验空间不足"
+			case errors.As(checkErr, &ioErr) && !errors.Is(checkErr, os.ErrNotExist):
+				row.LocalState, row.LocalDetail = "unavailable", "备份暂不可读取"
 			case checkErr != nil:
 				row.LocalState, row.LocalDetail = "damaged", "备份包不完整或校验不符"
 			case row.DeletePath == "":
@@ -82,7 +76,8 @@ func (s *Media) verifyBackupLocation(ctx context.Context, row *catalog.BackupRec
 						break
 					}
 					checked, e := os.Lstat(path)
-					if e != nil || !os.SameFile(current, checked) {
+					if e != nil || !os.SameFile(current, checked) || current.Size() != checked.Size() ||
+						!current.ModTime().Equal(checked.ModTime()) {
 						break
 					}
 					if _, e = media.Canonical(path); e != nil {
@@ -104,4 +99,26 @@ func (s *Media) verifyBackupLocation(ctx context.Context, row *catalog.BackupRec
 	row.LocationCheckedAt = &now
 	row.PackageCheck = &catalog.BackupPackageCheck{Path: row.Path, DeletePath: row.DeletePath, State: row.LocalState, Detail: row.LocalDetail, At: now}
 	return restored, s.catalog.SaveBackup(*row)
+}
+
+func (s *Media) verifyRegisteredPackage(ctx context.Context, path string, row catalog.BackupRecord) error {
+	var encoded []byte
+	if row.Format == "zip" {
+		verified, err := mediabackup.VerifyZIP(ctx, path)
+		if err != nil {
+			return err
+		}
+		encoded = verified.Bytes
+	} else {
+		pack, err := mediabackup.OpenPackage(ctx, path, filepath.Join(s.private, "temporary"), nil)
+		if err != nil {
+			return err
+		}
+		defer pack.Cleanup()
+		encoded = pack.Bytes
+	}
+	if catalog.ManifestDigest(encoded) != row.Digest {
+		return errors.New("备份与登记清单不符")
+	}
+	return nil
 }

@@ -37,7 +37,7 @@ func (a *App) InspectBackupRecord(id string, explicit bool) (catalog.BackupRecor
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, timeout)
 	defer cancel()
-	row, err := a.media.InspectBackup(ctx, id, explicit)
+	row, err := a.media.InspectBackup(ctx, id)
 	if err != nil {
 		return row, err
 	}
@@ -59,7 +59,16 @@ func (a *App) InspectBackupRecord(id string, explicit bool) (catalog.BackupRecor
 func (a *App) InspectLocalBackupRecord(id string) (catalog.BackupRecord, error) {
 	ctx, cancel := context.WithTimeout(a.ctx, 2*time.Minute)
 	defer cancel()
-	row, err := a.media.InspectBackup(ctx, id, true)
+	row, err := a.media.InspectBackup(ctx, id)
+	if err == nil {
+		row.Display, err = a.media.RecordBackupInspection(row, nil)
+	}
+	row.Display = publicBackupDisplay(row.Display)
+	return row, err
+}
+
+func (a *App) VerifyBackupRecord(id string) (catalog.BackupRecord, error) {
+	row, err := a.media.InspectBackup(a.ctx, id, true)
 	if err == nil {
 		row.Display, err = a.media.RecordBackupInspection(row, nil)
 	}

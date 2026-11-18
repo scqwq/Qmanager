@@ -23,6 +23,14 @@ func isLink(path string, info os.FileInfo) bool {
 }
 
 func openRead(root, relative string) (*os.File, error) {
+	return openReadShared(root, relative, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE)
+}
+
+func openReadWithoutWriters(root, relative string) (*os.File, error) {
+	return openReadShared(root, relative, windows.FILE_SHARE_READ|windows.FILE_SHARE_DELETE)
+}
+
+func openReadShared(root, relative string, share uint32) (*os.File, error) {
 	path, err := checkedPath(root, relative)
 	if err != nil {
 		return nil, err
@@ -31,7 +39,7 @@ func openRead(root, relative string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	h, err := windows.CreateFile(p, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	h, err := windows.CreateFile(p, windows.GENERIC_READ, share, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
 	if err != nil {
 		return nil, err
 	}

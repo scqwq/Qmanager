@@ -52,11 +52,11 @@ onUnmounted(()=>{disposed=true;generation++})
  <label>保存形式<select aria-label="保存形式" v-model="format" :disabled="submitting"><option value="directory">文件夹</option><option value="zip">ZIP 单文件（便于手动上传网盘）</option></select></label>
  <FeedbackNotice v-if="error||submitError" :feedback="errorFeedback(error||submitError)"/>
  <p v-if="loading&&!estimate" role="status">正在计算备份范围…</p>
- <dl v-if="estimate"><dt>可直接备份</dt><dd>{{estimate.files}} 个 · {{bytes(estimate.bytes)}}</dd><dt>待核对后备份</dt><dd>{{estimate.pending??0}} 个 · {{bytes(estimate.pending_bytes??0)}}</dd><dt>不纳入</dt><dd>{{estimate.excluded}} 项<span v-for="[reason,count] in exclusions" :key="reason" class="backup-exclusion">{{reasons[reason]??reason}}：{{count}} 项</span></dd><dt>临时峰值空间预算</dt><dd>{{bytes(estimate.estimated_peak*(format==='zip'?3:1))}}<small v-if="!selection">按候选副本与索引估算；实际分配空间可能不同</small></dd></dl>
+ <dl v-if="estimate"><dt>可直接备份</dt><dd>{{estimate.files}} 个 · {{bytes(estimate.bytes)}}</dd><dt>待核对后备份</dt><dd>{{estimate.pending??0}} 个 · {{bytes(estimate.pending_bytes??0)}}</dd><dt>不纳入</dt><dd>{{estimate.excluded}} 项<span v-for="[reason,count] in exclusions" :key="reason" class="backup-exclusion">{{reasons[reason]??reason}}：{{count}} 项</span></dd><dt>临时峰值空间预算</dt><dd>{{bytes(estimate.estimated_peak*(format==='zip'?2:1))}}<small v-if="!selection">按候选副本与索引估算；实际分配空间可能不同</small></dd></dl>
  <p v-if="estimate?.pending&&!selection" class="notice">会自动补足本次所选文件的稳定性核对，无需等待定时更新；通过后再复制，变化、不可读或仍不稳定的项目会明确报告。</p>
  <p v-else-if="estimate&&!candidates" class="notice">当前没有可备份文件，请查看排除原因或调整范围。</p>
  <button class="text-button" :disabled="loading||submitting" @click="update()">{{loading?'正在盘点…':'刷新盘点'}}</button>
- <p v-if="!selection">备份只复制，不删除源文件；备份不加密。</p><details v-if="!selection" class="settings-help"><summary>备份内容与空间说明</summary><p>按原目录树逐路径复制，同内容文件各存一份，复制后校验。{{format==='zip'?'ZIP 主要用于打包，不承诺压缩收益；创建时同时保留目录载荷、ZIP 和校验暂存，因此峰值预算更高。':'请整体保留备份文件夹。'}}</p></details>
+ <p v-if="!selection">备份只复制，不删除源文件；备份不加密。</p><details v-if="!selection" class="settings-help"><summary>备份内容与空间说明</summary><p>按原目录树逐路径复制，同内容文件各存一份，复制后校验。{{format==='zip'?'创建 ZIP 时需同时容纳目录副本和 ZIP。':'请整体保留备份文件夹。'}}</p></details>
  <div class="backup-destination"><label>保存目录<input aria-label="备份保存目录" :value="destination" readonly placeholder="请选择 QQ 数据目录以外的位置" :title="destination"/></label><button class="secondary" :disabled="choosing||submitting" @click="choose">{{choosing?'正在选择…':'选择保存目录'}}</button></div>
  <FeedbackNotice v-if="destinationError" :feedback="errorFeedback(destinationError)"/>
  <small v-if="!selection">优先使用设置中的默认保存目录；未设置时首次选择会自动保存为默认。可在目录窗口中新建文件夹。</small>

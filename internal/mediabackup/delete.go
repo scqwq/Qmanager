@@ -15,6 +15,19 @@ import (
 // tree, follow a link, or accept an unknown addition. Missing known members are
 // allowed so a cancelled or crashed deletion can be continued explicitly.
 func DeleteQuarantined(ctx context.Context, row catalog.BackupRecord) error {
+	return deleteQuarantined(ctx, row, ZIPVerification{})
+}
+
+// DeleteVerifiedZIP reuses this operation's verification across the quarantine rename.
+// The caller keeps the checked ZIP open against writes until removal returns.
+func DeleteVerifiedZIP(ctx context.Context, row catalog.BackupRecord, verified ZIPVerification) error {
+	if row.Format != "zip" || !verified.verified {
+		return errors.New("缺少本次ZIP删除校验证据")
+	}
+	return deleteQuarantined(ctx, row, verified)
+}
+
+func deleteQuarantined(ctx context.Context, row catalog.BackupRecord, verified ZIPVerification) error {
 	if row.DeletePath == "" || filepath.Dir(row.DeletePath) != filepath.Dir(row.Path) {
 		return errors.New("删除暂存位置无效")
 	}
@@ -36,17 +49,30 @@ func DeleteQuarantined(ctx context.Context, row catalog.BackupRecord) error {
 	defer parent.Close()
 	leaf := filepath.Base(path)
 	if row.Format == "zip" {
-		loaded, e := OpenPackage(ctx, path, filepath.Dir(path), nil)
+		pinned, e := media.OpenRelativeWithoutWriters(filepath.Dir(path), leaf)
 		if e != nil {
 			return e
 		}
-		defer loaded.Cleanup()
-		if catalog.ManifestDigest(loaded.Bytes) != row.Digest {
+		defer pinned.Close()
+		if !verified.verified {
+			verified, e = VerifyZIP(ctx, path)
+			if e != nil {
+				return e
+			}
+		}
+		if verified.Manifest.ID != row.ID || catalog.ManifestDigest(verified.Bytes) != row.Digest {
 			return errors.New("备份身份不符")
 		}
-		current, e := parent.Stat(leaf)
-		if e != nil || !os.SameFile(info, current) {
+		pinnedInfo, e := pinned.Stat()
+		if e != nil || !verified.Matches(pinnedInfo) || !verified.Matches(info) {
 			return errors.New("删除对象已变化")
+		}
+		current, e := parent.Lstat(leaf)
+		if e != nil || !verified.Matches(current) {
+			return errors.New("删除对象已变化")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		return parent.Remove(leaf)
 	}

@@ -27,6 +27,13 @@ func (s *Media) restoreBackup(parent context.Context, id, target string, candida
 	return s.backupJob(parent, "restoring", func(ctx context.Context) (returnErr error) {
 		row, err := s.catalog.Backup(id)
 		var pack *mediabackup.Package
+		if candidate == nil && err == nil && row.Format == "zip" && row.Status == "deleted" && row.DeletePath == "" {
+			// A ZIP that reappears at its registered path can be registered
+			// again only after checking the complete payload during Load.
+			reappeared := row
+			reappeared.Status, reappeared.Detail = "available", ""
+			candidate = &reappeared
+		}
 		if candidate != nil {
 			if err == nil && (row.Digest != candidate.Digest || row.DeletePath != "") {
 				return errors.New("原备份记录已变化，请重新选择")

@@ -130,6 +130,10 @@ func TestZIPPortablePackageRoundTripAndMaliciousEntries(t *testing.T) {
 	}
 	tampered := filepath.Join(t.TempDir(), "tampered.zip")
 	rewriteZIPWithChangedPayload(t, zipped, tampered)
+	preview, err := PreviewZIP(context.Background(), tampered)
+	if err != nil || !bytes.Equal(preview.Bytes, pack.Bytes) {
+		t.Fatal("ZIP preview should read the unchanged manifest without verifying media contents", err)
+	}
 	if _, err = VerifyZIP(context.Background(), tampered); err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatal("streaming verification accepted altered media with a valid ZIP CRC", err)
 	}

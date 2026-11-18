@@ -26,7 +26,8 @@ func (s *Media) PreviewHistoryBackup(ctx context.Context, id string) (BackupPrev
 	if err != nil {
 		return BackupPreview{}, err
 	}
-	preview, e := s.PreviewBackup(ctx, row.Path, row.ID)
+	preview, e := s.previewBackup(ctx, row.Path, row.Format != "zip", row.ID)
+	preview.PreviousPath = ""
 	if e != nil {
 		s.op.Lock()
 		current, lookupErr := s.catalog.Backup(id)
@@ -41,43 +42,57 @@ func (s *Media) PreviewHistoryBackup(ctx context.Context, id string) (BackupPrev
 }
 
 func (s *Media) registerBackup(ctx context.Context, path string, expectedID ...string) (catalog.BackupRecord, error) {
-	row, err := s.inspectBackupPackage(ctx, path, expectedID...)
+	row, err := s.inspectBackupPackage(ctx, path, false, expectedID...)
 	if err != nil {
 		return row, err
 	}
 	return row, s.catalog.SaveBackup(row)
 }
 
-func (s *Media) inspectBackupPackage(ctx context.Context, path string, expectedID ...string) (catalog.BackupRecord, error) {
+func (s *Media) inspectBackupPackage(ctx context.Context, path string, previewOnly bool, expectedID ...string) (catalog.BackupRecord, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return catalog.BackupRecord{}, err
+	}
+	if !info.IsDir() {
+		var metadata mediabackup.ZIPMetadata
+		if previewOnly {
+			metadata, err = mediabackup.PreviewZIP(ctx, path)
+		} else {
+			var verified mediabackup.ZIPVerification
+			verified, err = mediabackup.VerifyZIP(ctx, path)
+			metadata = verified.ZIPMetadata
+		}
+		if err != nil {
+			return catalog.BackupRecord{}, err
+		}
+		return backupRecordFromManifest(path, "zip", metadata.Info.Size(), metadata.Manifest, metadata.Bytes, expectedID...)
+	}
 	pack, err := mediabackup.OpenPackage(ctx, path, filepath.Join(s.private, "temporary"), nil)
 	if err != nil {
 		return catalog.BackupRecord{}, err
 	}
 	defer pack.Cleanup()
-	m := pack.Manifest
+	return backupRecordFromManifest(path, "directory", pack.MetadataBytes, pack.Manifest, pack.Bytes, expectedID...)
+}
+
+func backupRecordFromManifest(path, format string, size int64, m mediabackup.Manifest, encoded []byte, expectedID ...string) (catalog.BackupRecord, error) {
 	if len(expectedID) > 0 && expectedID[0] != "" && m.ID != expectedID[0] {
 		return catalog.BackupRecord{}, errors.New("所选备份编号与历史不符，未替换或登记其他备份")
 	}
 	selection, _ := json.Marshal(m.Selection)
-	row := catalog.BackupRecord{ID: m.ID, Name: m.SourceName, Path: path, Format: "directory", CreatedAt: m.CreatedAt, Selection: selection, Manifest: string(pack.Bytes), Digest: catalog.ManifestDigest(pack.Bytes), Status: "available"}
-	info, err := os.Stat(path)
-	if err != nil {
-		return row, err
+	row := catalog.BackupRecord{
+		ID: m.ID, Name: m.SourceName, Path: path, Format: format, CreatedAt: m.CreatedAt,
+		Bytes: size, Selection: selection, Manifest: string(encoded),
+		Digest: catalog.ManifestDigest(encoded), Status: "available",
 	}
-	if !info.IsDir() {
-		row.Format = "zip"
-		row.Bytes = info.Size()
-	}
-	for _, e := range m.Entries {
-		if e.Excluded == "" {
+	for _, entry := range m.Entries {
+		if entry.Excluded == "" {
 			row.Files++
-			if row.Format == "directory" {
-				row.Bytes += e.Item.Bytes
+			if format == "directory" {
+				row.Bytes += entry.Item.Bytes
 			}
 		}
-	}
-	if row.Format == "directory" {
-		row.Bytes += pack.MetadataBytes
 	}
 	return row, nil
 }
@@ -139,7 +154,7 @@ func (s *Media) previewBackup(parent context.Context, path string, register bool
 			return preview, errors.New("备份必须与 QQ 来源和应用私有目录分离")
 		}
 	}
-	row, err := s.inspectBackupPackage(ctx, path, expectedID...)
+	row, err := s.inspectBackupPackage(ctx, path, !register, expectedID...)
 	if err != nil {
 		return preview, err
 	}

@@ -17,6 +17,7 @@ const editing=ref<BackupRecord|null>(null)
 const upload=ref<BackupRecord|null>(null)
 const markDraft=ref<Partial<Record<BackupPresenceKey,BackupMarkState>>>({})
 const rowAction=ref('')
+const verifying=ref(false)
 const canForget=(row:BackupRecord)=>row.status==='deleted'&&row.local_state==='missing'
 const selectedRecords=computed(()=>rows.value.filter(r=>checked.value.includes(r.id)))
 const canRemove=(row:BackupRecord)=>!canForget(row)
@@ -26,11 +27,11 @@ const allChecked=computed(()=>rows.value.slice(0,100).length>0&&rows.value.slice
 const partiallyChecked=computed(()=>checked.value.length>0&&!allChecked.value)
 const bytes=(v:number)=>`${(v/1024/1024).toLocaleString(undefined,{maximumFractionDigits:1})} MiB`
 function scope(r:BackupRecord){return r.selected_only?'已选媒体':filterScope(r.selection)}
-let loading=false,disposed=false,refreshAgain=false,verifyAgain=false
+let loading=false,disposed=false,refreshAgain=false,explicitAgain=false
 const rowVersions=new Map<string,number>()
 async function refresh(explicit=false){
  if(disposed)return
- if(loading){refreshAgain=true;verifyAgain ||= explicit;return}
+ if(loading){refreshAgain=true;explicitAgain ||= explicit;return}
  loading=true
  refreshing.value=true
  try{
@@ -57,7 +58,7 @@ async function refresh(explicit=false){
  finally{
   loading=false
   refreshing.value=false
-  if(refreshAgain&&!disposed){const verify=verifyAgain;refreshAgain=verifyAgain=false;void refresh(verify)}
+  if(refreshAgain&&!disposed){const explicit=explicitAgain;refreshAgain=explicitAgain=false;void refresh(explicit)}
  }
 }
 function applyObservation(id:string,observed:BackupRecord,explicit:boolean){
@@ -71,16 +72,17 @@ function applyObservation(id:string,observed:BackupRecord,explicit:boolean){
  row.location_checked_at=observed.location_checked_at
  if(explicit)row.display=observed.display
 }
-async function inspect(row:BackupRecord){
+async function inspect(row:BackupRecord,verify=false){
  if(props.busy||rowAction.value)return
  rowVersions.set(row.id,(rowVersions.get(row.id)??0)+1)
  rowAction.value=row.id
+ verifying.value=verify
  error.value=''
  try{
-  const observed=await api().InspectBackupRecord(row.id,true)
+  const observed=await (verify?api().VerifyBackupRecord(row.id):api().InspectBackupRecord(row.id,true))
   if(!disposed)applyObservation(row.id,observed,true)
  }catch(e){if(!disposed)error.value=String(e)}
- finally{rowAction.value=''}
+ finally{rowAction.value='';verifying.value=false}
 }
 function edit(row:BackupRecord){
  markDraft.value={}
@@ -132,7 +134,7 @@ onMounted(()=>{void refresh();window.addEventListener('focus',focusRefresh) });o
  <td><div class="history-row-actions">
   <button class="secondary" :disabled="busy||row.status==='deleting'||row.local_state!=='present'" @click="emit('load',row.id)">加载此备份</button>
   <button class="secondary" :disabled="busy||row.local_state!=='present'||row.status==='deleted'" @click="upload=row">上传至123云盘</button>
-  <details class="row-more"><summary>更多操作</summary><div class="more-actions"><button v-if="row.has_loaded" class="text-button" :disabled="busy" @click="emit('view',row.id)">查看已加载媒体</button><button class="text-button" :disabled="busy" @click="emit('relocate',row.id)">重新定位</button><button v-if="row.source_cleanup_job" class="text-button" :disabled="busy" @click="emit('cleanResults',row.source_cleanup_job)">查看原文件清理结果</button><button class="danger-button" :disabled="busy||!row.files" @click="emit('clean',[row.id])">清理对应原文件</button><button class="danger-button" :disabled="busy||!canRemove(row)" @click="confirming=[row]">删除该备份文件</button><button class="text-button" :disabled="busy||!canForget(row)" :title="canForget(row)?'删除此条记录':'先删除本地备份包，并确认登记位置已不存在后可用'" @click="forgetting=row">删除此条记录</button></div></details>
+  <details class="row-more"><summary>更多操作</summary><div class="more-actions"><button class="text-button" type="button" :disabled="busy||!!rowAction||row.local_state==='missing'" @click="inspect(row,true)">{{verifying&&rowAction===row.id?'校验中…':'校验备份'}}</button><button v-if="row.has_loaded" class="text-button" :disabled="busy" @click="emit('view',row.id)">查看已加载媒体</button><button class="text-button" :disabled="busy" @click="emit('relocate',row.id)">重新定位</button><button v-if="row.source_cleanup_job" class="text-button" :disabled="busy" @click="emit('cleanResults',row.source_cleanup_job)">查看原文件清理结果</button><button class="danger-button" :disabled="busy||!row.files" @click="emit('clean',[row.id])">清理对应原文件</button><button class="danger-button" :disabled="busy||!canRemove(row)" @click="confirming=[row]">删除该备份文件</button><button class="text-button" :disabled="busy||!canForget(row)" :title="canForget(row)?'删除此条记录':'先删除本地备份包，并确认登记位置已不存在后可用'" @click="forgetting=row">删除此条记录</button></div></details>
   <button class="text-button" @click="emit('operations',row.id)">操作记录</button>
  </div></td></tr></tbody></table></div>
  <BackupCloudUpload v-if="upload" :row="upload" @close="upload=null" @updated="refresh()" @login="upload=null;emit('cloudLogin')"/>

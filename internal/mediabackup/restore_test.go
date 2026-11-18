@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"qqarchive/internal/media"
@@ -123,6 +124,15 @@ func TestZIPPortablePackageRoundTripAndMaliciousEntries(t *testing.T) {
 	if len(pack.Items) != 2 || pack.Manifest.SourceID != source.ID {
 		t.Fatal("zip lost media/evidence")
 	}
+	verified, err := VerifyZIP(context.Background(), zipped)
+	if err != nil || !bytes.Equal(verified.Bytes, pack.Bytes) || verified.Info.Name() != filepath.Base(zipped) {
+		t.Fatal("streaming verification did not reproduce the package evidence", err)
+	}
+	tampered := filepath.Join(t.TempDir(), "tampered.zip")
+	rewriteZIPWithChangedPayload(t, zipped, tampered)
+	if _, err = VerifyZIP(context.Background(), tampered); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+		t.Fatal("streaming verification accepted altered media with a valid ZIP CRC", err)
+	}
 	temporary := pack.Root
 	pack.Cleanup()
 	if _, err = os.Stat(temporary); !os.IsNotExist(err) {
@@ -143,6 +153,46 @@ func TestZIPPortablePackageRoundTripAndMaliciousEntries(t *testing.T) {
 			p.Cleanup()
 			t.Fatalf("accepted dangerous/duplicate %s", name)
 		}
+	}
+}
+
+func rewriteZIPWithChangedPayload(t *testing.T, from, to string) {
+	t.Helper()
+	archive, err := zip.OpenReader(from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	var out bytes.Buffer
+	writer := zip.NewWriter(&out)
+	changed := false
+	for _, file := range archive.File {
+		input, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(input)
+		input.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !changed && file.Name != headerName && file.Name != indexName && len(b) != 0 {
+			b[0] ^= 1
+			changed = true
+		}
+		entry, err := writer.Create(file.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = entry.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = writer.Close(); err != nil || !changed {
+		t.Fatal("did not create tampered ZIP", err)
+	}
+	if err := os.WriteFile(to, out.Bytes(), 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 

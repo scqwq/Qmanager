@@ -3,7 +3,7 @@ import {computed,onMounted,onUnmounted,ref} from 'vue'
 import {api,type BackupRecord,type CloudFolder,type CloudStatus} from '../api'
 import CloudFolderPicker from './CloudFolderPicker.vue'
 import FeedbackNotice from './FeedbackNotice.vue'
-import {cloudErrorFeedback} from '../cloudFeedback'
+import {cloudErrorFeedback,cloudUploadLabels,isCloudUploadActive} from '../cloudFeedback'
 
 const props=defineProps<{row:BackupRecord}>()
 const emit=defineEmits<{close:[];updated:[];login:[]}>()
@@ -12,11 +12,10 @@ const targetPath=computed(()=>trail.value.map(folder=>folder.name).join(' / '))
 const status=ref<CloudStatus|null>(null)
 const dialog=ref<HTMLElement|null>(null)
 const picker=ref(false),working=ref(false),started=ref(false),error=ref('')
-const activePhases=['checking','initializing','uploading','completing','verifying']
-const active=computed(()=>activePhases.includes(status.value?.upload.phase??''))
+const active=computed(()=>isCloudUploadActive(status.value?.upload.phase??''))
 const task=computed(()=>started.value?status.value?.upload:null)
 const loginRequired=computed(()=>!started.value&&status.value!==null&&!status.value.logged_in&&!status.value.needs_check)
-const labels:Record<string,string>={checking:'核对并准备备份',initializing:'准备上传',uploading:'上传中',completing:'完成登记',verifying:'核对结果',complete:'上传完成',failed:'上传未完成',cancelled:'已取消'}
+const labels={...cloudUploadLabels,checking:'核对目标目录'} as Record<string,string>
 let timer:ReturnType<typeof setTimeout>|undefined,disposed=false
 let previousFocus:HTMLElement|null=null
 
@@ -25,10 +24,15 @@ async function update(){
   const next=await api().GetCloudStatus()
   if(disposed)return
   const wasActive=active.value
+  error.value=''
   status.value=next
   if(active.value)timer=setTimeout(()=>void update(),800)
   else if(started.value&&(wasActive||working.value))emit('updated')
- }catch(e){if(!disposed)error.value=String(e)}
+ }catch(e){
+  if(disposed)return
+  error.value=String(e)
+  if(active.value)timer=setTimeout(()=>void update(),800)
+ }
 }
 async function open(){
  working.value=true

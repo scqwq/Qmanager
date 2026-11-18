@@ -20,18 +20,22 @@ const maxResponse = 2 << 20
 const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 type Client struct {
-	http      *http.Client
-	api       string
-	login     string
-	mu        sync.RWMutex
-	token     string
-	loginUUID string
-	trace     *responseTrace
+	http             *http.Client
+	api              string
+	login            string
+	mu               sync.RWMutex
+	token            string
+	loginUUID        string
+	trace            *responseTrace
+	requestMu        sync.Mutex
+	batchInterval    time.Duration
+	nextBatchRequest time.Time
+	rateLimit        rateLimitError
 }
 
 func newClient(trace *responseTrace, uuid string) *Client {
 	jar, _ := cookiejar.New(nil)
-	return &Client{http: &http.Client{Jar: jar, Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, api: "https://api.123panapi.com", login: "https://user.123pan.cn", loginUUID: uuid, trace: trace}
+	return &Client{http: &http.Client{Jar: jar, Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, api: "https://api.123panapi.com", login: "https://user.123pan.cn", loginUUID: uuid, trace: trace, batchInterval: 250 * time.Millisecond}
 }
 func (c *Client) setToken(token string) { c.mu.Lock(); c.token = token; c.mu.Unlock() }
 func (c *Client) getToken() string      { c.mu.RLock(); defer c.mu.RUnlock(); return c.token }
@@ -71,6 +75,9 @@ func (c *Client) call(ctx context.Context, login bool, method, path string, quer
 		req.Header.Set("app-version", "132")
 		req.Header.Set("LoginUuid", c.loginUUID)
 	} else {
+		if err := c.waitForRequest(ctx); err != nil {
+			return envelope{}, err
+		}
 		token := c.getToken()
 		if token == "" {
 			return envelope{}, ErrLogin
@@ -88,6 +95,9 @@ func (c *Client) call(ctx context.Context, login bool, method, path string, quer
 		return envelope{}, errors.New("无法连接123云盘，请检查网络后重试")
 	}
 	defer resp.Body.Close()
+	if !login && resp.StatusCode == http.StatusTooManyRequests {
+		return envelope{}, c.noteRateLimit(resp.Header.Get("Retry-After"), "HTTP 429")
+	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 	if err != nil || len(b) > maxResponse {
 		return envelope{}, errors.New("云盘响应不完整或超过大小限制")
@@ -106,6 +116,9 @@ func (c *Client) call(ctx context.Context, login bool, method, path string, quer
 		return envelope{}, errors.New("云盘返回了无法识别的响应")
 	}
 	if result.Code != 0 && result.Code != 200 {
+		if !login && result.Code == 100011 {
+			return result, c.noteRateLimit(resp.Header.Get("Retry-After"), "业务码 100011")
+		}
 		return result, &apiError{result.Code, result.Message}
 	}
 	return result, nil
@@ -233,8 +246,15 @@ func (c *Client) createFolder(ctx context.Context, parent int64, name string) (F
 
 func trustedObjectURL(raw string) (*url.URL, error) {
 	u, e := url.Parse(raw)
-	if e != nil || u.Scheme != "https" || u.User != nil || u.Fragment != "" || (u.Port() != "" && u.Port() != "443") {
-		return nil, errors.New("云盘返回了不安全的上传地址")
+	switch {
+	case e != nil:
+		return nil, errors.New("云盘上传地址格式无法解析")
+	case u.Scheme != "https" || u.Hostname() == "":
+		return nil, errors.New("云盘上传地址缺少有效的 HTTPS 主机")
+	case u.User != nil || u.Fragment != "":
+		return nil, errors.New("云盘上传地址包含用户信息或片段")
+	case u.Port() != "" && u.Port() != "443":
+		return nil, errors.New("云盘上传地址使用了非标准端口")
 	}
 	h := strings.ToLower(u.Hostname())
 	allowed := false

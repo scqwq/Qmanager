@@ -349,19 +349,32 @@ func validEntries(m Manifest, h header) error {
 	}
 	return nil
 }
-func readSmall(ctx context.Context, root, name string, limit int64) ([]byte, error) {
+func openMetadataFile(root, name string, limit int64) (io.ReadCloser, error) {
 	f, err := media.OpenRelative(root, filepath.FromSlash(name))
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() > limit {
+		f.Close()
 		return nil, errors.New("元数据非普通文件或超过上限")
 	}
+	return f, nil
+}
+
+func readSmall(ctx context.Context, root, name string, limit int64) ([]byte, error) {
+	f, err := openMetadataFile(root, name, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return readMetadataBytes(ctx, f, limit)
+}
+
+func readMetadataBytes(ctx context.Context, f io.Reader, limit int64) ([]byte, error) {
 	b, err := io.ReadAll(io.LimitReader(media.CancelReader{Ctx: ctx, Reader: f}, limit+1))
 	if int64(len(b)) > limit {
-		return nil, errors.New("元数据过大")
+		return nil, errors.New("元数据超过限制")
 	}
 	return b, err
 }
@@ -425,7 +438,18 @@ func writeMetadata(ctx context.Context, root string, m *Manifest) error {
 	return closeErr
 }
 func readMetadata(ctx context.Context, root string) (Manifest, error) {
-	b, err := readSmall(ctx, root, headerName, maxHeader)
+	return decodeMetadata(ctx, func(name string, limit int64) (io.ReadCloser, error) {
+		return openMetadataFile(root, name, limit)
+	})
+}
+
+func decodeMetadata(ctx context.Context, open func(string, int64) (io.ReadCloser, error)) (Manifest, error) {
+	f, err := open(headerName, maxHeader)
+	if err != nil {
+		return Manifest{}, err
+	}
+	b, err := readMetadataBytes(ctx, f, maxHeader)
+	f.Close()
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -436,18 +460,15 @@ func readMetadata(ctx context.Context, root string) (Manifest, error) {
 	if err = validHeader(h); err != nil {
 		return Manifest{}, err
 	}
-	f, err := media.OpenRelative(root, filepath.FromSlash(indexName))
+	f, err = open(indexName, maxIndex)
 	if err != nil {
 		return Manifest{}, err
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxIndex {
-		return Manifest{}, errors.New("文件索引超过限制或不可读")
-	}
 	hash := sha256.New()
 	r := newRows(h)
-	scan := bufio.NewScanner(io.TeeReader(io.LimitReader(media.CancelReader{Ctx: ctx, Reader: f}, maxIndex+1), hash))
+	limited := &io.LimitedReader{R: media.CancelReader{Ctx: ctx, Reader: f}, N: maxIndex + 1}
+	scan := bufio.NewScanner(io.TeeReader(limited, hash))
 	scan.Buffer(make([]byte, 64*1024), maxLine+1)
 	for scan.Scan() {
 		if err = ctx.Err(); err != nil {
@@ -463,6 +484,9 @@ func readMetadata(ctx context.Context, root string) (Manifest, error) {
 	}
 	if err = scan.Err(); err != nil {
 		return Manifest{}, err
+	}
+	if limited.N == 0 {
+		return Manifest{}, errors.New("文件索引超过限制")
 	}
 	if hex.EncodeToString(hash.Sum(nil)) != h.IndexSHA256 {
 		return Manifest{}, errors.New("逐文件索引SHA-256不符")

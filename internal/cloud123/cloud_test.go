@@ -51,7 +51,8 @@ func TestUploadStreamsPartsUsesFinalIDAndNeverSendsSessionToObjectHost(t *testin
 	const size = 600 << 10
 	var mu sync.Mutex
 	var putSizes []int64
-	var finalQueried bool
+	var putParts []string
+	var checkedParts, finalQueried bool
 	s := testService(t, func(r *http.Request) (*http.Response, error) {
 		if r.Method == http.MethodPut {
 			if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
@@ -66,6 +67,7 @@ func TestUploadStreamsPartsUsesFinalIDAndNeverSendsSessionToObjectHost(t *testin
 			}
 			mu.Lock()
 			putSizes = append(putSizes, n)
+			putParts = append(putParts, r.URL.Query().Get("part"))
 			mu.Unlock()
 			return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
 		}
@@ -83,14 +85,22 @@ func TestUploadStreamsPartsUsesFinalIDAndNeverSendsSessionToObjectHost(t *testin
 			return ok(map[string]any{"Next": "-1", "InfoList": []any{}}), nil
 		case "/b/api/file/upload_request":
 			return ok(map[string]any{"Reuse": false, "FileId": 11, "Bucket": "test-bucket", "Key": "test-key", "UploadId": "test-upload", "StorageNode": "test-node", "SliceSize": "262144"}), nil
-		case "/b/api/file/s3_upload_object/auth":
+		case "/b/api/file/s3_list_upload_parts":
+			checkedParts = true
+			// Resuming from the old release may return a partial session.
+			return ok(map[string]any{"Parts": []any{map[string]any{"PartNumber": 1}}}), nil
+		case "/b/api/file/s3_repare_upload_parts_batch":
 			var start, end int
 			_ = json.Unmarshal(body["partNumberStart"], &start)
 			_ = json.Unmarshal(body["partNumberEnd"], &end)
-			if end != start+1 {
+			if !checkedParts || start != 1 || end != 4 {
 				t.Error("unexpected part range")
 			}
-			return ok(map[string]any{"presignedUrls": map[string]string{jsonNumber(start): "https://unit.123pan.com/object?part=" + jsonNumber(start)}}), nil
+			return ok(map[string]any{"presignedUrls": map[string]string{
+				"1": "https://unit.123pan.com/object?part=1",
+				"2": "https://unit.123pan.com/object?part=2",
+				"3": "https://unit.123pan.com/object?part=3",
+			}}), nil
 		case "/b/api/file/upload_complete/v2":
 			var multipart bool
 			_ = json.Unmarshal(body["isMultipart"], &multipart)
@@ -136,7 +146,8 @@ func TestUploadStreamsPartsUsesFinalIDAndNeverSendsSessionToObjectHost(t *testin
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(putSizes) != 3 || putSizes[0] != 262144 || putSizes[1] != 262144 || putSizes[2] != 90112 || !finalQueried {
+	if len(putSizes) != 3 || putSizes[0] != 262144 || putSizes[1] != 262144 || putSizes[2] != 90112 ||
+		strings.Join(putParts, ",") != "1,2,3" || !finalQueried {
 		t.Fatalf("unexpected transfer: %v final=%v", putSizes, finalQueried)
 	}
 	// The test fixture has a separately checked MD5; assert terminal success too.

@@ -98,6 +98,7 @@ func TestFolderUploadBatchBoundaryAndRecovery(t *testing.T) {
 		}
 	}
 	first := testService(t, transport)
+	first.client.batchInterval = 0
 	choice, err := first.SelectFolder(context.Background(), root)
 	if err != nil || choice.Files != 951 || choice.Batches != 2 {
 		t.Fatalf("unexpected plan: %+v, %v", choice, err)
@@ -113,6 +114,7 @@ func TestFolderUploadBatchBoundaryAndRecovery(t *testing.T) {
 	first.Close()
 
 	reopened := testService(t, transport)
+	reopened.client.batchInterval = 0
 	reopened.credential = first.credential
 	before, err = reopened.FolderUploadStatus()
 	if err != nil || before.Phase != "paused" || before.ID != choice.Ticket {

@@ -82,7 +82,7 @@ func TestBackupUploadUsesVerifiedArchiveAndRejectsMovedPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Ext(path) != ".zip" || info.Size() == 0 {
+	if filepath.Ext(path) != ".zip" || info.Name() != filepath.Base(path) || info.Size() == 0 {
 		t.Fatal("verified directory ZIP missing")
 	}
 	cleanup()
@@ -94,5 +94,29 @@ func TestBackupUploadUsesVerifiedArchiveAndRejectsMovedPackage(t *testing.T) {
 	}
 	if _, _, _, err = s.BackupUploadFile(ctx, selected); err == nil {
 		t.Fatal("moved backup was accepted for upload")
+	}
+}
+
+func TestBackupUploadExistingZIPNeedsNoTemporaryDirectory(t *testing.T) {
+	s, _, _, _, row := locationBackup(t, "zip")
+	ctx := context.Background()
+	temporary := filepath.Join(s.private, "temporary")
+	if err := os.Rename(temporary, temporary+"-fixture"); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(temporary, []byte("synthetic occupied path"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := s.PrepareBackupUpload(ctx, row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, info, cleanup, err := s.BackupUploadFile(ctx, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if path != row.Path || info.Name() != filepath.Base(path) {
+		t.Fatal("registered ZIP was not used directly")
 	}
 }

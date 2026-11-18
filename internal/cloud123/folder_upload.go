@@ -305,7 +305,7 @@ func (s *Service) runFolderUpload(ctx context.Context, c *Client, db *sql.DB, ac
 	defer db.Close()
 	status := folderSummary(job)
 	status.Phase, status.Detail = "running", ""
-	err := s.uploadFolderEntries(ctx, c, db, account, &job, &status)
+	err := s.uploadFolderEntries(context.WithValue(ctx, folderUploadRequest{}, true), c, db, account, &job, &status)
 	status.Phase, status.Detail = "complete", ""
 	if err != nil {
 		status.Phase, status.Detail = "paused", safeMessage(err.Error())

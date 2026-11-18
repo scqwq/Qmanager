@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"qqarchive/internal/media"
 	"qqarchive/internal/storage"
-	"strings"
 )
 
 type Package struct {
@@ -44,43 +43,9 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 			return nil, e
 		}
 		defer input.Close()
-		if e = checkZIPDirectory(input, info.Size()); e != nil {
-			return nil, e
-		}
-		reader, e := zip.NewReader(input, info.Size())
+		names, total, e := inspectZIP(ctx, input, info.Size())
 		if e != nil {
 			return nil, e
-		}
-		names := map[string]*zip.File{}
-		folded := map[string]bool{}
-		var total uint64
-		for _, entry := range reader.File {
-			name := strings.TrimSuffix(entry.Name, "/")
-			directory := entry.FileInfo().IsDir()
-			if !safeRelative(name) || folded[strings.ToLower(name)] || entry.Flags&1 != 0 || entry.Mode()&os.ModeSymlink != 0 || entry.Mode()&os.ModeType != 0 && !directory || (entry.Method != zip.Store && entry.Method != zip.Deflate) {
-				return nil, errors.New("ZIP包含危险、重复、链接、加密或不支持的条目")
-			}
-			if directory && entry.UncompressedSize64 != 0 {
-				return nil, errors.New("ZIP目录包含数据")
-			}
-			if name != headerName && name != indexName && name != ".qman" && !strings.HasPrefix(name, "Tencent Files/") && name != "Tencent Files" && !strings.HasPrefix(name, "Media/") && name != "Media" {
-				return nil, errors.New("ZIP含非目录树备份条目")
-			}
-			if entry.CompressedSize64 > uint64(info.Size()) || entry.UncompressedSize64 > uint64(maxBytes) || entry.UncompressedSize64 > entry.CompressedSize64*200+maxIndex {
-				return nil, errors.New("ZIP长度或压缩比超限")
-			}
-			if name == headerName && entry.UncompressedSize64 > maxHeader || name == indexName && entry.UncompressedSize64 > maxIndex {
-				return nil, errors.New("ZIP元数据超限")
-			}
-			total += entry.UncompressedSize64
-			if total > uint64(maxBytes)+maxIndex+maxHeader {
-				return nil, errors.New("ZIP展开总量超限")
-			}
-			folded[strings.ToLower(name)] = true
-			names[name] = entry
-		}
-		if names[headerName] == nil || names[indexName] == nil {
-			return nil, errors.New("ZIP缺少backup.json或逐文件索引；旧格式未适配")
 		}
 		temporary, e = media.Canonical(temporary)
 		if e != nil {
@@ -152,26 +117,9 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 		if e != nil {
 			return nil, e
 		}
-		expected, e := expectedTree(m)
+		expected, e := verifyZIPTree(names, m)
 		if e != nil {
 			return nil, e
-		}
-		count := 0
-		for name, entry := range names {
-			if entry.FileInfo().IsDir() {
-				if !expected.Dirs[name] {
-					return nil, errors.New("ZIP含未知目录")
-				}
-				continue
-			}
-			wanted, exists := expected.Files[name]
-			if !exists || wanted.Size >= 0 && uint64(wanted.Size) != entry.UncompressedSize64 {
-				return nil, errors.New("ZIP载荷集合或长度不符")
-			}
-			count++
-		}
-		if count != len(expected.Files) {
-			return nil, errors.New("ZIP缺失载荷")
 		}
 		for name := range expected.Files {
 			if name == headerName || name == indexName {
@@ -211,20 +159,27 @@ func ZipDirectory(ctx context.Context, path string) (string, error) {
 	return ZipDirectoryTo(ctx, path, path+".zip")
 }
 
-// ZipDirectoryTo writes an independently verified ZIP to the selected destination.
 func ZipDirectoryTo(ctx context.Context, path, target string) (string, error) {
+	if _, err := WriteVerifiedZIP(ctx, path, target); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+// WriteVerifiedZIP publishes the archive only after verifying its complete payload.
+func WriteVerifiedZIP(ctx context.Context, path, target string) (ZIPVerification, error) {
 	m, _, err := Open(ctx, path, nil)
 	if err != nil {
-		return "", err
+		return ZIPVerification{}, err
 	}
 	set, err := expectedTree(m)
 	if err != nil {
-		return "", err
+		return ZIPVerification{}, err
 	}
 	parent := filepath.Dir(target)
 	out, err := os.CreateTemp(parent, ".qman-zip-*.partial")
 	if err != nil {
-		return "", err
+		return ZIPVerification{}, err
 	}
 	stage := out.Name()
 	defer os.Remove(stage)
@@ -234,13 +189,13 @@ func ZipDirectoryTo(ctx context.Context, path, target string) (string, error) {
 		if err = ctx.Err(); err != nil {
 			writer.Close()
 			out.Close()
-			return "", err
+			return ZIPVerification{}, err
 		}
 		in, e := media.OpenRelative(path, filepath.FromSlash(name))
 		if e != nil {
 			writer.Close()
 			out.Close()
-			return "", e
+			return ZIPVerification{}, e
 		}
 		entry, e := writer.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
 		if e == nil {
@@ -250,25 +205,29 @@ func ZipDirectoryTo(ctx context.Context, path, target string) (string, error) {
 		if e != nil {
 			writer.Close()
 			out.Close()
-			return "", e
+			return ZIPVerification{}, e
 		}
 	}
 	err = writer.Close()
 	se := out.Sync()
 	ce := out.Close()
 	if err != nil || se != nil || ce != nil {
-		return "", errors.New("ZIP写入失败")
+		return ZIPVerification{}, errors.New("ZIP写入失败")
 	}
-	verified, err := OpenPackage(ctx, stage, parent, nil)
+	verified, err := VerifyZIP(ctx, stage)
 	if err != nil {
-		return "", err
+		return ZIPVerification{}, err
 	}
-	verified.Cleanup()
 	if err = ctx.Err(); err != nil {
-		return "", err
+		return ZIPVerification{}, err
 	}
 	if err = storage.Publish(stage, target); err != nil {
-		return "", err
+		return ZIPVerification{}, err
 	}
-	return target, nil
+	info, err := os.Lstat(target)
+	if err != nil || !sameZIP(verified.Info, info) {
+		return ZIPVerification{}, errors.New("发布的ZIP与校验文件不一致")
+	}
+	verified.Info = info
+	return verified, nil
 }

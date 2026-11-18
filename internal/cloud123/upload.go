@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -53,7 +54,7 @@ func (s *Service) StartUpload(parent, ticket string) error {
 		return errors.New("文件选择已过期，请重新选择文件")
 	}
 	delete(s.files, ticket)
-	s.startUploadLocked(c, id, chosen.info.Name(), chosen.info.Size(), func(context.Context) (chosenFile, func(), error) {
+	s.startUploadLocked(c, id, chosen.info.Name(), chosen.info.Size(), "checking", func(context.Context) (chosenFile, func(), error) {
 		return chosen, nil, nil
 	}, nil)
 	return nil
@@ -89,7 +90,7 @@ func (s *Service) StartBackupUpload(parent, name string, prepare func(context.Co
 	if !s.folders[parent] {
 		return errors.New("请重新选择云端目录")
 	}
-	s.startUploadLocked(c, id, name, 0, func(ctx context.Context) (chosenFile, func(), error) {
+	s.startUploadLocked(c, id, name, 0, "preparing", func(ctx context.Context) (chosenFile, func(), error) {
 		path, info, cleanup, e := prepare(ctx)
 		if e == nil && (info == nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 100<<30 || !validName(info.Name())) {
 			e = errors.New("备份 ZIP 名称或大小超出上传范围")
@@ -143,12 +144,12 @@ func (s *Service) CheckBackupObject(ctx context.Context, receipt UploadReceipt) 
 	return "present", "云端文件编号、大小与 MD5 核对一致"
 }
 
-func (s *Service) startUploadLocked(c *Client, id int64, name string, total int64, prepare func(context.Context) (chosenFile, func(), error), finish func(UploadReceipt, error) error) {
+func (s *Service) startUploadLocked(c *Client, id int64, name string, total int64, phase string, prepare func(context.Context) (chosenFile, func(), error), finish func(UploadReceipt, error) error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	s.done = make(chan struct{})
 	done := s.done
-	s.status.Upload = UploadStatus{ID: randomID(), Phase: "checking", Name: name, Total: total}
+	s.status.Upload = UploadStatus{ID: randomID(), Phase: phase, Name: name, Total: total}
 	account := accountKey(s.uid)
 	go func() {
 		defer close(done)
@@ -162,6 +163,7 @@ func (s *Service) startUploadLocked(c *Client, id int64, name string, total int6
 			s.mu.Lock()
 			s.status.Upload.Total = chosen.info.Size()
 			s.status.Upload.Name = chosen.info.Name()
+			s.status.Upload.Phase = "checking"
 			s.mu.Unlock()
 			file, e = s.upload(ctx, c, id, chosen)
 		}
@@ -287,7 +289,8 @@ func (s *Service) upload(ctx context.Context, c *Client, parent int64, chosen ch
 	if e = c.ensureNameAbsent(ctx, parent, chosen.info.Name()); e != nil {
 		return remoteFile{}, e
 	}
-	digest, e := uploadDigest(ctx, f, func(n int64) { s.progress("checking", n) })
+	s.progress("hashing", 0)
+	digest, e := uploadDigest(ctx, f, func(n int64) { s.progress("hashing", n) })
 	if e != nil {
 		return remoteFile{}, e
 	}
@@ -334,26 +337,27 @@ func (c *Client) sendFile(ctx context.Context, parent int64, f *os.File, info os
 		if parts > 10000 {
 			return remoteFile{}, errors.New("分片数量超过测试页限制")
 		}
+		if parts > 1 {
+			progress("authorizing", 0)
+			if e = c.checkMultipartSession(ctx, init, parts); e != nil {
+				return remoteFile{}, e
+			}
+		}
+		var addresses []*url.URL
 		for part := int64(1); part <= parts; part++ {
 			if !unchanged() {
 				return remoteFile{}, errors.New("上传期间文件发生变化，已停止；云端部分内容需核对")
 			}
-			auth, e := c.post(ctx, "/b/api/file/s3_upload_object/auth", map[string]any{"bucket": init.Bucket, "key": init.Key, "partNumberStart": part, "partNumberEnd": part + 1, "uploadId": init.UploadID, "StorageNode": init.StorageNode})
-			if e != nil {
-				return remoteFile{}, e
-			}
-			var urls struct {
-				URLs map[string]string `json:"presignedUrls"`
-			}
-			if json.Unmarshal(auth.Data, &urls) != nil {
-				return remoteFile{}, errors.New("分片授权响应无法识别")
-			}
-			signed := urls.URLs[strconv.FormatInt(part, 10)]
-			u, e := trustedObjectURL(signed)
-			if e != nil {
-				return remoteFile{}, e
-			}
 			offset := (part - 1) * partSize
+			if len(addresses) == 0 {
+				progress("authorizing", offset)
+				addresses, e = c.authorizeParts(ctx, init, part, min(part+uploadAuthorizationBatch-1, parts), parts)
+				if e != nil {
+					return remoteFile{}, e
+				}
+			}
+			u := addresses[0]
+			addresses = addresses[1:]
 			length := min(partSize, info.Size()-offset)
 			reader := &progressReader{r: io.NewSectionReader(f, offset, length), ctx: ctx, update: func(n int64) { progress("uploading", offset+n) }}
 			req, e := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), reader)
@@ -376,6 +380,9 @@ func (c *Client) sendFile(ctx context.Context, parent int64, f *os.File, info os
 			}
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8192))
 			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusTooManyRequests {
+				return remoteFile{}, c.noteRateLimit(resp.Header.Get("Retry-After"), "HTTP 429")
+			}
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				return remoteFile{}, fmt.Errorf("分片传输未完成（HTTP %d），云端部分内容需核对", resp.StatusCode)
 			}

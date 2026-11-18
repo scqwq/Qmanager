@@ -2,7 +2,7 @@
 import {computed,nextTick,onMounted,onUnmounted,ref} from 'vue'
 import {api,type CloudFolder,type CloudFolderUpload,type CloudLocalFile,type CloudLocalFolder,type CloudQR,type CloudStatus} from '../api'
 import FeedbackNotice from './FeedbackNotice.vue'
-import {cloudErrorFeedback as errorFeedback} from '../cloudFeedback'
+import {cloudErrorFeedback as errorFeedback,cloudUploadLabels as phaseNames,isCloudUploadActive} from '../cloudFeedback'
 import CloudFolderPicker from './CloudFolderPicker.vue'
 import CloudFolderUploadResult from './CloudFolderUploadResult.vue'
 import OperationPrompt from './OperationPrompt.vue'
@@ -15,7 +15,7 @@ const trail=ref<CloudFolder[]>([{id:'0',name:'我的文件'}]),picker=ref(false)
 const localFolder=ref<CloudLocalFolder|null>(null),folderTask=ref<CloudFolderUpload|null>(null)
 const showFolderResult=ref(false),confirmAbandon=ref(false)
 let observedFolderID=''
-const fileUploading=computed(()=>['checking','initializing','uploading','completing','verifying'].includes(status.value.upload.phase))
+const fileUploading=computed(()=>isCloudUploadActive(status.value.upload.phase))
 const folderUploading=computed(()=>folderTask.value?.phase==='running')
 const folderPaused=computed(()=>folderTask.value?.phase==='paused')
 const uploading=computed(()=>fileUploading.value||folderUploading.value)
@@ -24,7 +24,6 @@ const folderProcessed=computed(()=>{
  return task?task.uploaded+task.skipped+task.failed:0
 })
 const target=computed(()=>trail.value[trail.value.length-1]),targetPath=computed(()=>trail.value.map(f=>f.name).join(' / '))
-const phaseNames:Record<string,string>={checking:'检查文件',initializing:'准备上传',uploading:'上传中',completing:'完成登记',verifying:'核对结果',complete:'上传完成',failed:'上传未完成',cancelled:'已取消'}
 const qrLabels:Record<string,string>={waiting:'等待扫码',scanned:'已扫码，请在手机确认',expired:'二维码已过期',rejected:'已取消扫码'}
 const qrLabel=computed(()=>qrLabels[qrState.value]||'')
 const progress=computed(()=>status.value.upload.total?Math.min(100,Math.round(status.value.upload.done/status.value.upload.total*100)):0)
@@ -99,7 +98,15 @@ async function abandonFolderUpload(confirmed:boolean){
   await syncStatus()
  })
 }
-function scheduleStatus(){if(statusTimer)clearTimeout(statusTimer);statusTimer=setTimeout(async()=>{if(disposed)return;try{await syncStatus();if(uploading.value)scheduleStatus()}catch(e){error.value=String(e)}},800)}
+function scheduleStatus(){
+ if(statusTimer)clearTimeout(statusTimer)
+ statusTimer=setTimeout(async()=>{
+  if(disposed)return
+  try{await syncStatus();error.value=''}
+  catch(e){if(!disposed)error.value=String(e)}
+  if(!disposed&&uploading.value)scheduleStatus()
+ },800)
+}
 function folderKeys(e:KeyboardEvent){if(e.key==='Escape'&&!working.value){e.preventDefault();folderForm.value=false}if(e.key==='Tab'){const root=(e.currentTarget as HTMLElement),els=Array.from(root.querySelectorAll<HTMLElement>('input:not([disabled]),button:not([disabled])'));const first=els[0],last=els[els.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}}}
 onMounted(()=>{void refreshLogin()})
 onUnmounted(()=>{disposed=true;modeGeneration++;stopQR();if(statusTimer)clearTimeout(statusTimer);if(messageTimer)clearTimeout(messageTimer);password.value='';void api().CancelCloudQRCode().catch(()=>{})})

@@ -25,27 +25,51 @@ func (s *Media) PrepareBackupUpload(ctx context.Context, id string) (catalog.Bac
 	return row, ctx.Err()
 }
 
-func (s *Media) BackupUploadFile(ctx context.Context, selected catalog.BackupRecord) (string, os.FileInfo, func(), error) {
+func (s *Media) backupUploadLocation(ctx context.Context, selected catalog.BackupRecord) (catalog.BackupRecord, string, error) {
 	// Resolve by registry ID again and never authorize a path from the frontend.
 	row, err := s.PrepareBackupUpload(ctx, selected.ID)
 	if err != nil {
-		return "", nil, nil, err
+		return row, "", err
 	}
-	if row.Path != selected.Path || row.Digest != selected.Digest {
-		return "", nil, nil, errors.New("备份登记已变化，请重新选择")
+	if row.Path != selected.Path || row.Digest != selected.Digest || row.Format != selected.Format {
+		return row, "", errors.New("备份登记已变化，请重新选择")
 	}
 	root, err := media.Canonical(row.Path)
 	if err != nil || root != row.Path {
-		return "", nil, nil, errors.New("备份路径无法核实")
+		return row, "", errors.New("备份路径无法核实")
 	}
 	protected, err := s.protected()
 	if err != nil {
-		return "", nil, nil, err
+		return row, "", err
 	}
 	for _, path := range protected {
 		if media.Overlap(root, path) {
-			return "", nil, nil, errors.New("备份位置与应用数据或 QQ 来源重叠")
+			return row, "", errors.New("备份位置与应用数据或 QQ 来源重叠")
 		}
+	}
+	return row, root, nil
+}
+
+func (s *Media) BackupUploadMembers(ctx context.Context, selected catalog.BackupRecord) (string, map[string]string, error) {
+	row, root, err := s.backupUploadLocation(ctx, selected)
+	if err != nil {
+		return "", nil, err
+	}
+	checked, err := mediabackup.InspectSplit(ctx, root, true)
+	if err != nil {
+		return "", nil, err
+	}
+	if checked.Manifest.ID != row.ID || catalog.ManifestDigest(checked.Bytes) != row.Digest {
+		return "", nil, errors.New("分包备份内容与登记清单不符")
+	}
+	files, err := mediabackup.SplitUploadFiles(ctx, root, checked.Manifest)
+	return root, files, err
+}
+
+func (s *Media) BackupUploadFile(ctx context.Context, selected catalog.BackupRecord) (string, os.FileInfo, func(), error) {
+	row, root, err := s.backupUploadLocation(ctx, selected)
+	if err != nil {
+		return "", nil, nil, err
 	}
 	before, err := os.Lstat(root)
 	if err != nil {

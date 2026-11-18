@@ -122,6 +122,10 @@ func checkTree(root *os.Root, path string, create bool) error {
 	return nil
 }
 func sameContent(ctx context.Context, root *os.Root, path, hash string, size int64) (bool, error) {
+	return checkContent(ctx, root, path, hash, size, nil)
+}
+
+func checkContent(ctx context.Context, root *os.Root, path, hash string, size int64, p *media.Progress) (bool, error) {
 	if err := checkTree(root, path, false); err != nil {
 		return false, err
 	}
@@ -151,7 +155,11 @@ func sameContent(ctx context.Context, root *os.Root, path, hash string, size int
 		return false, nil
 	}
 	h := sha256.New()
-	n, err := io.CopyBuffer(h, media.CancelReader{Ctx: ctx, Reader: io.LimitReader(f, size+1)}, make([]byte, 1024*1024))
+	var writer io.Writer = h
+	if p != nil {
+		writer = p.Writer(h)
+	}
+	n, err := io.CopyBuffer(writer, media.CancelReader{Ctx: ctx, Reader: io.LimitReader(f, size+1)}, make([]byte, 1024*1024))
 	after, se := f.Stat()
 	if err != nil {
 		return false, err
@@ -161,7 +169,7 @@ func sameContent(ctx context.Context, root *os.Root, path, hash string, size int
 	}
 	return hex.EncodeToString(h.Sum(nil)) == hash, nil
 }
-func copyNew(ctx context.Context, item media.Item, root *os.Root, path, hash string) error {
+func copyNew(ctx context.Context, item media.Item, root *os.Root, path, hash string, p *media.Progress) error {
 	free, err := storage.Free(root.Name())
 	if err != nil || free < uint64(item.Bytes) {
 		return errors.New("目标剩余空间不足或无法查询")
@@ -181,7 +189,7 @@ func copyNew(ctx context.Context, item media.Item, root *os.Root, path, hash str
 	}
 	defer root.Remove(stage)
 	h := sha256.New()
-	n, copyErr := io.CopyBuffer(io.MultiWriter(out, h), media.CancelReader{Ctx: ctx, Reader: io.LimitReader(in, item.Bytes+1)}, make([]byte, 1024*1024))
+	n, copyErr := io.CopyBuffer(p.Writer(io.MultiWriter(out, h)), media.CancelReader{Ctx: ctx, Reader: io.LimitReader(in, item.Bytes+1)}, make([]byte, 1024*1024))
 	syncErr := out.Sync()
 	closeErr := out.Close()
 	if copyErr != nil || syncErr != nil || closeErr != nil || n != item.Bytes || !media.SameItem(in, item) || hex.EncodeToString(h.Sum(nil)) != hash {
@@ -230,6 +238,11 @@ func Restore(ctx context.Context, m Manifest, items []media.Item, target, fallba
 		byInstance[e.Item.InstanceID] = e
 	}
 	var bytes int64
+	var total int64
+	for _, item := range items {
+		total += item.Bytes
+	}
+	work := media.StartProgress(ctx, "restoring", total)
 	for _, item := range items {
 		if err = ctx.Err(); err != nil {
 			return result, err
@@ -244,7 +257,7 @@ func Restore(ctx context.Context, m Manifest, items []media.Item, target, fallba
 		if dest != nil && writeErr == nil && item.Status == "recognized" {
 			if err = checkTree(dest, filepath.FromSlash(path), true); err == nil {
 				var exists bool
-				exists, err = sameContent(ctx, dest, filepath.FromSlash(path), e.SHA256, item.Bytes)
+				exists, err = checkContent(ctx, dest, filepath.FromSlash(path), e.SHA256, item.Bytes, work)
 				if err == nil && exists {
 					p.Root = target
 					p.Path = path
@@ -256,12 +269,14 @@ func Restore(ctx context.Context, m Manifest, items []media.Item, target, fallba
 						ext := filepath.Ext(path)
 						path = strings.TrimSuffix(path, ext) + "_备份_" + e.SHA256 + ext
 					}
-					exists, err = sameContent(ctx, dest, filepath.FromSlash(path), e.SHA256, item.Bytes)
+					work.Set(bytes)
+					exists, err = checkContent(ctx, dest, filepath.FromSlash(path), e.SHA256, item.Bytes, work)
 					if err == nil && exists {
 						p.Status = "skipped"
 						result.Skipped++
 					} else if err == nil {
-						err = copyNew(ctx, item, dest, filepath.FromSlash(path), e.SHA256)
+						work.Set(bytes)
+						err = copyNew(ctx, item, dest, filepath.FromSlash(path), e.SHA256, work)
 						if err == nil {
 							p.Status = "written"
 							result.Written++
@@ -289,9 +304,11 @@ func Restore(ctx context.Context, m Manifest, items []media.Item, target, fallba
 			err = checkTree(library, filepath.FromSlash(path), true)
 			if err == nil {
 				var exists bool
-				exists, err = sameContent(ctx, library, filepath.FromSlash(path), e.SHA256, item.Bytes)
+				work.Set(bytes)
+				exists, err = checkContent(ctx, library, filepath.FromSlash(path), e.SHA256, item.Bytes, work)
 				if err == nil && !exists {
-					err = copyNew(ctx, item, library, filepath.FromSlash(path), e.SHA256)
+					work.Set(bytes)
+					err = copyNew(ctx, item, library, filepath.FromSlash(path), e.SHA256, work)
 				}
 			}
 			if err != nil {
@@ -310,6 +327,7 @@ func Restore(ctx context.Context, m Manifest, items []media.Item, target, fallba
 		}
 		result.Placements = append(result.Placements, p)
 		bytes += item.Bytes
+		work.Set(bytes)
 		if progress != nil {
 			progress(len(result.Placements), bytes)
 		}

@@ -22,6 +22,7 @@ const Version = 2
 const headerName = "backup.json"
 const indexName = ".qman/files.jsonl"
 const maxHeader = 64 * 1024
+const maxSplitHeader = 256 * 1024
 const maxIndex = 128 * 1024 * 1024
 const maxLine = 1024 * 1024
 const maxDirectories = 50000
@@ -29,6 +30,8 @@ const maxDirectories = 50000
 type header struct {
 	Format        string       `json:"format"`
 	Version       int          `json:"version"`
+	Layout        string       `json:"layout,omitempty"`
+	Parts         []SplitPart  `json:"parts,omitempty"`
 	ID            string       `json:"id"`
 	CreatedAt     time.Time    `json:"created_at"`
 	SourceID      string       `json:"source_id"`
@@ -76,6 +79,7 @@ type snapshot struct {
 
 func (m Manifest) head() header {
 	h := header{Format: m.Format, Version: m.Version, ID: m.ID, CreatedAt: m.CreatedAt, SourceID: m.SourceID, SourceName: m.SourceName, RestorePrefix: m.RestorePrefix, PayloadRoot: m.PayloadRoot, Selection: m.Selection, IndexSHA256: m.IndexSHA256, Entries: len(m.Entries)}
+	h.Layout, h.Parts = m.Layout, m.Parts
 	for _, e := range m.Entries {
 		if e.Excluded == "" {
 			h.Files++
@@ -85,7 +89,7 @@ func (m Manifest) head() header {
 	return h
 }
 func fromHeader(h header) Manifest {
-	return Manifest{Format: h.Format, Version: h.Version, ID: h.ID, CreatedAt: h.CreatedAt, SourceID: h.SourceID, SourceName: h.SourceName, RestorePrefix: h.RestorePrefix, PayloadRoot: h.PayloadRoot, Selection: h.Selection, IndexSHA256: h.IndexSHA256}
+	return Manifest{Format: h.Format, Version: h.Version, Layout: h.Layout, Parts: h.Parts, ID: h.ID, CreatedAt: h.CreatedAt, SourceID: h.SourceID, SourceName: h.SourceName, RestorePrefix: h.RestorePrefix, PayloadRoot: h.PayloadRoot, Selection: h.Selection, IndexSHA256: h.IndexSHA256}
 }
 func utc(t time.Time) string {
 	if t.IsZero() {
@@ -286,7 +290,11 @@ func (m *Manifest) UnmarshalJSON(b []byte) error {
 	return nil
 }
 func validHeader(h header) error {
-	if h.Format != Format || h.Version != Version || !safeID.MatchString(h.ID) || h.Entries < 1 || h.Entries > media.MaxFiles || h.Files < 1 || h.Files > h.Entries || h.Bytes < 0 || h.Bytes > maxBytes || !hashName.MatchString(h.IndexSHA256) {
+	versionOK := h.Version == Version && h.Layout == "" && len(h.Parts) == 0
+	if h.Version == splitVersion && h.Layout == SplitZIP {
+		versionOK = validSplitParts(h.Parts, h.Files)
+	}
+	if h.Format != Format || !versionOK || !safeID.MatchString(h.ID) || h.Entries < 1 || h.Entries > media.MaxFiles || h.Files < 1 || h.Files > h.Entries || h.Bytes < 0 || h.Bytes > maxBytes || !hashName.MatchString(h.IndexSHA256) {
 		return errors.New("不支持的备份格式/版本或数量；请使用新版目录树备份")
 	}
 	if h.PayloadRoot == "Tencent Files" {
@@ -415,12 +423,20 @@ func writeMetadata(ctx context.Context, root string, m *Manifest) error {
 		return ce
 	}
 	m.IndexSHA256 = hex.EncodeToString(hash.Sum(nil))
+	return writeHeader(root, *m)
+}
+
+func writeHeader(root string, m Manifest) error {
 	h := m.head()
-	if err = validHeader(h); err != nil {
+	if err := validHeader(h); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(h, "", "  ")
-	if err != nil || len(b) > maxHeader {
+	limit := maxHeader
+	if h.Layout == SplitZIP {
+		limit = maxSplitHeader
+	}
+	if err != nil || len(b) > limit {
 		return errors.New("备份说明超过限制")
 	}
 	f, err := os.OpenFile(filepath.Join(root, headerName), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
@@ -444,11 +460,11 @@ func readMetadata(ctx context.Context, root string) (Manifest, error) {
 }
 
 func decodeMetadata(ctx context.Context, open func(string, int64) (io.ReadCloser, error)) (Manifest, error) {
-	f, err := open(headerName, maxHeader)
+	f, err := open(headerName, maxSplitHeader)
 	if err != nil {
 		return Manifest{}, err
 	}
-	b, err := readMetadataBytes(ctx, f, maxHeader)
+	b, err := readMetadataBytes(ctx, f, maxSplitHeader)
 	f.Close()
 	if err != nil {
 		return Manifest{}, err
@@ -456,6 +472,9 @@ func decodeMetadata(ctx context.Context, open func(string, int64) (io.ReadCloser
 	var h header
 	if err = decodeStrict(b, &h); err != nil {
 		return Manifest{}, err
+	}
+	if h.Layout != SplitZIP && len(b) > maxHeader {
+		return Manifest{}, errors.New("备份说明超过限制")
 	}
 	if err = validHeader(h); err != nil {
 		return Manifest{}, err

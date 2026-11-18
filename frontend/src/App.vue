@@ -10,7 +10,8 @@ import OperationPrompt from './components/OperationPrompt.vue'
 import MediaDeleteDialog from './components/MediaDeleteDialog.vue'
 import {useMediaManager} from './useMediaManager'
 import {useFeedback} from './useFeedback'
-import {libraryStatus} from './libraryStatus'
+import {libraryStatus,progressPhases} from './libraryStatus'
+import TaskProgress from './components/TaskProgress.vue'
 import type {FeedbackPage} from './feedback'
 import FeedbackNotice from './components/FeedbackNotice.vue'
 import HelpTip from './components/HelpTip.vue'
@@ -327,7 +328,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
    </div>
   </template>
   <button class="nav-item settings-nav" :class="{active:settingsPage}" :disabled="!desktop" @click="settingsPage=true;historyPage=false">设置</button>
-  <div class="sidebar-footer">本机处理 <span>0.9.7</span></div>
+  <div class="sidebar-footer">本机处理 <span>0.9.8</span></div>
  </aside>
  <main>
   <header class="topbar">
@@ -336,10 +337,14 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
   </header>
   <div class="workspace">
    <FeedbackNotice v-for="item in feedback.visible.value" :key="item.entry.id" :feedback="item.entry" dismissible @dismiss="feedback.dismiss(item.kind)"/>
+   <div v-if="historyPage&&busy||(settingsPage||!state.source)&&progressPhases.has(state.phase)" class="scan-progress" role="status">
+    <div class="scan-progress-copy"><span>{{progressTitle}}</span><TaskProgress v-if="progressPhases.has(state.phase)" :label="progressTitle" :done="state.progress?.done" :total="state.progress?.total"/><span v-else> · 已处理 {{state.scanned}} 项</span></div>
+    <button v-if="scanning" :disabled="stopping||state.stopping" @click="terminateUpdate">{{stopping||state.stopping?'正在终止…':'终止更新'}}</button>
+    <button v-else :disabled="cancelling" @click="cancel">{{cancelling?'正在停止…':'取消任务'}}</button>
+   </div>
    <SettingsPage v-if="settingsPage" :busy="busy" :records-message="recordsMessage" :records-error="recordsError" :cloud-login-from-backup="cloudLoginFromBackup" @imported="importedDefault" @export-records="exportIndex"/>
    <div v-else-if="historyPage">
-    <div v-if="busy" class="scan-progress" role="status">{{progressTitle}} · 已处理 {{state.scanned}} 项<button v-if="scanning" :disabled="stopping||state.stopping" @click="terminateUpdate">{{stopping||state.stopping?'正在终止…':'终止更新'}}</button><button v-else :disabled="cancelling" @click="cancel">{{cancelling?'正在停止…':'取消任务'}}</button></div>
-    <BackupHistory v-show="!historyLogID" :busy="busy" @load="loadHistory" @relocate="openBackup" @view="viewLoaded" @remove="removeBackups" @forget="forgetBackup" @operations="openBackupOperations" @clean="manager.prepareBackups" @clean-results="manager.results" @cloud-login="openBackupCloudLogin"/>
+    <BackupHistory v-show="!historyLogID" :busy="busy" :verification="state.verification" @load="loadHistory" @relocate="openBackup" @view="viewLoaded" @remove="removeBackups" @forget="forgetBackup" @operations="openBackupOperations" @clean="manager.prepareBackups" @clean-results="manager.results" @cloud-login="openBackupCloudLogin"/>
     <LogsPage v-if="historyLogID" :backup-id="historyLogID" @back="closeBackupOperations"/>
    </div>
    <template v-else>

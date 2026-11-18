@@ -109,6 +109,12 @@ func (s *Media) verifyRegisteredPackage(ctx context.Context, path string, row ca
 			return err
 		}
 		encoded = verified.Bytes
+	} else if row.Format == mediabackup.SplitZIP {
+		verified, err := mediabackup.InspectSplit(ctx, path, true)
+		if err != nil {
+			return err
+		}
+		encoded = verified.Bytes
 	} else {
 		pack, err := mediabackup.OpenPackage(ctx, path, filepath.Join(s.private, "temporary"), nil)
 		if err != nil {

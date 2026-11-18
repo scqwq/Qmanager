@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"qqarchive/internal/catalog"
 	"qqarchive/internal/cloud123"
+	"qqarchive/internal/mediabackup"
 	"time"
 )
 
@@ -25,6 +27,7 @@ func publicBackupDisplay(display catalog.BackupDisplay) catalog.BackupDisplay {
 	if display.Cloud != nil {
 		cloud := *display.Cloud
 		cloud.AccountID, cloud.FileID, cloud.MD5 = "", "", ""
+		cloud.FolderID, cloud.Objects = "", nil
 		display.Cloud = &cloud
 	}
 	return display
@@ -46,8 +49,16 @@ func (a *App) InspectBackupRecord(id string, explicit bool) (catalog.BackupRecor
 			if a.cloud.Status().NeedsCheck {
 				_, _ = a.cloud.Refresh(ctx)
 			}
-			receipt := cloud123.UploadReceipt{AccountID: cloud.AccountID, FileID: cloud.FileID, MD5: cloud.MD5, Size: cloud.Size}
-			cloud.State, cloud.Detail = a.cloud.CheckBackupObject(ctx, receipt)
+			if cloud.FolderID != "" {
+				objects := make([]cloud123.UploadReceipt, 0, len(cloud.Objects))
+				for _, obj := range cloud.Objects {
+					objects = append(objects, cloud123.UploadReceipt{FileID: obj.FileID, ParentID: obj.ParentID, Name: obj.Name, Directory: obj.Directory, MD5: obj.MD5, Size: obj.Size})
+				}
+				cloud.State, cloud.Detail = a.cloud.CheckBackupFolder(ctx, cloud.AccountID, objects, cloud.ExpectedFiles)
+			} else {
+				receipt := cloud123.UploadReceipt{AccountID: cloud.AccountID, FileID: cloud.FileID, MD5: cloud.MD5, Size: cloud.Size}
+				cloud.State, cloud.Detail = a.cloud.CheckBackupObject(ctx, receipt)
+			}
 			cloud.CheckedAt = time.Now().UTC()
 		}
 		row.Display, err = a.media.RecordBackupInspection(row, row.Display.Cloud)
@@ -85,6 +96,32 @@ func (a *App) UploadRegisteredBackup(id, parent string) error {
 	row, err := a.media.PrepareBackupUpload(a.ctx, id)
 	if err != nil {
 		return err
+	}
+	if row.Format == mediabackup.SplitZIP {
+		return a.cloud.StartBackupFolderUpload(parent, row.Name, func(ctx context.Context) (string, map[string]string, error) {
+			return a.media.BackupUploadMembers(ctx, row)
+		}, func(receipt cloud123.BackupFolderReceipt, uploadErr error) error {
+			if uploadErr != nil && receipt.FolderID == "" {
+				return a.media.SaveBackupUpload(id, row.Digest, nil, "分包上传未完成")
+			}
+			cloud := &catalog.BackupCloud{
+				AccountID: receipt.AccountID, FolderID: receipt.FolderID, CheckedAt: time.Now().UTC(),
+				State: "present", Detail: "清单和全部分包已在云端核对", ExpectedFiles: receipt.ExpectedFiles,
+			}
+			confirmed := 0
+			for _, obj := range receipt.Objects {
+				cloud.Size += obj.Size
+				if !obj.Directory {
+					confirmed++
+				}
+				cloud.Objects = append(cloud.Objects, catalog.BackupCloudObject{FileID: obj.FileID, ParentID: obj.ParentID, Name: obj.Name, Directory: obj.Directory, MD5: obj.MD5, Size: obj.Size})
+			}
+			if uploadErr != nil {
+				cloud.State = "changed"
+				cloud.Detail = fmt.Sprintf("已核对 %d / %d 个备份文件，上传未完成", confirmed, receipt.ExpectedFiles)
+			}
+			return a.media.SaveBackupUpload(id, row.Digest, cloud, cloud.Detail)
+		})
 	}
 	return a.cloud.StartBackupUpload(parent, row.Name, func(ctx context.Context) (string, os.FileInfo, func(), error) {
 		return a.media.BackupUploadFile(ctx, row)

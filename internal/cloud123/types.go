@@ -22,6 +22,8 @@ type Status struct {
 	Upload     UploadStatus `json:"upload"`
 }
 type UploadStatus struct {
+	Part     int    `json:"part,omitempty"`
+	Parts    int    `json:"parts,omitempty"`
 	ID       string `json:"id"`
 	Phase    string `json:"phase"`
 	Name     string `json:"name"`

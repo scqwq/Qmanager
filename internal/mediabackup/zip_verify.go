@@ -66,21 +66,20 @@ func inspectZIP(ctx context.Context, input io.ReaderAt, size int64) (map[string]
 		folded[key] = true
 		names[name] = entry
 	}
-	if names[headerName] == nil || names[indexName] == nil {
-		return nil, 0, errors.New("ZIP缺少backup.json或逐文件索引；旧格式未适配")
-	}
 	return names, total, nil
+}
+
+func requireZIPMetadata(names map[string]*zip.File) error {
+	if names[headerName] == nil || names[indexName] == nil {
+		return errors.New("ZIP缺少backup.json或逐文件索引；分包备份请选择外层文件夹")
+	}
+	return nil
 }
 
 func verifyZIPTree(names map[string]*zip.File, m Manifest) (treeSet, error) {
 	expected, err := expectedTree(m)
 	if err != nil {
 		return expected, err
-	}
-	for dir := range expected.Dirs {
-		if strings.Count(dir, "/") >= 32 {
-			return expected, errors.New("备份目录树过深")
-		}
 	}
 	count := 0
 	for name, entry := range names {
@@ -131,6 +130,9 @@ func readZIP(ctx context.Context, path string, verify bool) (ZIPMetadata, error)
 	if err != nil {
 		return ZIPMetadata{}, err
 	}
+	if err = requireZIPMetadata(names); err != nil {
+		return ZIPMetadata{}, err
+	}
 	m, err := decodeMetadata(ctx, func(name string, limit int64) (io.ReadCloser, error) {
 		entry := names[name]
 		if entry.FileInfo().IsDir() || entry.UncompressedSize64 > uint64(limit) {
@@ -140,6 +142,9 @@ func readZIP(ctx context.Context, path string, verify bool) (ZIPMetadata, error)
 	})
 	if err != nil {
 		return ZIPMetadata{}, err
+	}
+	if m.Layout != "" {
+		return ZIPMetadata{}, errors.New("分包备份请选择外层文件夹")
 	}
 	tree, err := verifyZIPTree(names, m)
 	if err != nil {
@@ -164,6 +169,11 @@ func readZIP(ctx context.Context, path string, verify bool) (ZIPMetadata, error)
 func verifyZIPPayload(ctx context.Context, names map[string]*zip.File, tree treeSet) error {
 	buffer := make([]byte, 1024*1024)
 	digest := sha256.New()
+	var total int64
+	for _, file := range tree.Files {
+		total += max(0, file.Size)
+	}
+	p := media.StartProgress(ctx, "verifying", total)
 	for name, expected := range tree.Files {
 		if name == headerName || name == indexName {
 			continue
@@ -176,7 +186,7 @@ func verifyZIPPayload(ctx context.Context, names map[string]*zip.File, tree tree
 			return err
 		}
 		digest.Reset()
-		n, err := io.CopyBuffer(digest, media.CancelReader{Ctx: ctx, Reader: io.LimitReader(entry, expected.Size+1)}, buffer)
+		n, err := io.CopyBuffer(p.Writer(digest), media.CancelReader{Ctx: ctx, Reader: io.LimitReader(entry, expected.Size+1)}, buffer)
 		entry.Close()
 		if err != nil {
 			return err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"qqarchive/internal/diagnostics"
+	"qqarchive/internal/media"
 )
 
 func (s *Media) busy() bool {
@@ -40,6 +41,14 @@ func (s *Media) backupProgress(n int, b int64) {
 	s.state.Bytes = b
 	s.mu.Unlock()
 }
+func (s *Media) taskProgress(ctx context.Context) context.Context {
+	return media.WithProgress(ctx, func(progress media.TaskProgress) {
+		s.mu.Lock()
+		s.state.Progress = &progress
+		s.mu.Unlock()
+	})
+}
+
 func (s *Media) backupJob(parent context.Context, phase string, fn func(context.Context) error) error {
 	s.op.Lock()
 	defer s.op.Unlock()
@@ -53,6 +62,7 @@ func (s *Media) backupJob(parent context.Context, phase string, fn func(context.
 	s.jobCancel = cancel
 	s.jobDone = done
 	s.state.Phase = phase
+	s.state.Progress = nil
 	s.state.OperationResult = ""
 	s.state.Error = ""
 	s.state.Message = ""
@@ -70,7 +80,7 @@ func (s *Media) backupJob(parent context.Context, phase string, fn func(context.
 			taskName = "后台任务"
 		}
 		diagnostics.Record(ctx, "info", "task.start", taskName+"开始")
-		err := fn(ctx)
+		err := fn(s.taskProgress(ctx))
 		if err != nil {
 			diagnostics.Record(ctx, "error", "task.failed", taskName+"未完成；具体原因见操作结果")
 		} else {
@@ -80,6 +90,7 @@ func (s *Media) backupJob(parent context.Context, phase string, fn func(context.
 		defer s.mu.Unlock()
 		s.jobCancel = nil
 		s.state.Phase = "ready"
+		s.state.Progress = nil
 		s.state.CheckStage, s.state.CheckWaiting = "", false
 		if err != nil {
 			s.state.Error = err.Error()

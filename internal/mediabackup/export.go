@@ -43,6 +43,7 @@ func ExportFlat(ctx context.Context, target string, items []media.Item, excluded
 	defer root.Close()
 	names := map[string]int{}
 	buffer := make([]byte, 1024*1024)
+	p := media.StartProgress(ctx, "exporting", plan.Bytes)
 	for _, item := range items {
 		if err = ctx.Err(); err != nil {
 			return result, err
@@ -63,7 +64,7 @@ func ExportFlat(ctx context.Context, target string, items []media.Item, excluded
 			name = fmt.Sprintf("%s_%d%s", stem, names[original], ext)
 		}
 		names[strings.ToLower(name)] = 1
-		if err = copyExportFile(ctx, root, name, item, buffer); err != nil {
+		if err = copyExportFile(ctx, root, name, item, buffer, p); err != nil {
 			return result, fmt.Errorf("导出 %s 失败，未发布导出目录：%w", name, err)
 		}
 		result.Files++
@@ -89,7 +90,7 @@ func ExportFlat(ctx context.Context, target string, items []media.Item, excluded
 	return result, errors.New("导出目录编号已用完，请重试")
 }
 
-func copyExportFile(ctx context.Context, root *os.Root, name string, item media.Item, buffer []byte) error {
+func copyExportFile(ctx context.Context, root *os.Root, name string, item media.Item, buffer []byte, p *media.Progress) error {
 	input, err := media.OpenItem(item)
 	if err != nil {
 		return err
@@ -99,7 +100,7 @@ func copyExportFile(ctx context.Context, root *os.Root, name string, item media.
 	if err != nil {
 		return err
 	}
-	n, copyErr := io.CopyBuffer(out, media.CancelReader{Ctx: ctx, Reader: io.LimitReader(input, item.Bytes+1)}, buffer)
+	n, copyErr := io.CopyBuffer(p.Writer(out), media.CancelReader{Ctx: ctx, Reader: io.LimitReader(input, item.Bytes+1)}, buffer)
 	if err = errors.Join(copyErr, out.Sync(), out.Close()); err != nil {
 		return err
 	}

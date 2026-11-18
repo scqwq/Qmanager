@@ -107,7 +107,7 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 	if s.busy() {
 		return errors.New("当前任务尚未结束")
 	}
-	if format != "directory" && format != "zip" {
+	if format != "directory" && format != "zip" && format != mediabackup.SplitZIP {
 		return errors.New("备份保存形式无效")
 	}
 	if err := media.ValidateFilter(f); err != nil {
@@ -142,7 +142,7 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 	// Invalid output, empty selections and insufficient space must not stop
 	// observation: pending files still need their later stability checks.
 	budget := estimate.EstimatedPeak
-	if format == "zip" {
+	if format != "directory" {
 		budget *= 2
 	}
 	free, err := storage.Free(target)
@@ -166,6 +166,7 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 	s.jobDone = make(chan struct{})
 	done := s.jobDone
 	s.state.Phase = "preparing_backup"
+	s.state.Progress = nil
 	s.state.OperationResult = ""
 	s.state.Message = ""
 	s.state.Error = ""
@@ -179,6 +180,7 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 	go func() {
 		defer cancel()
 		defer close(done)
+		ctx := s.taskProgress(ctx)
 		var result mediabackup.Result
 		var items []media.Item
 		var options mediabackup.BuildOptions
@@ -194,7 +196,8 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 			s.state.CheckStage, s.state.CheckWaiting = "", false
 			s.state.Scanned, s.state.Bytes = 0, 0
 			s.mu.Unlock()
-			result, err = mediabackup.Build(ctx, source, items, f, target, protected, s.catalog.History, func(n int, b int64) { s.mu.Lock(); s.state.Scanned = n; s.state.Bytes = b; s.mu.Unlock() }, options)
+			options.SplitZIP = format == mediabackup.SplitZIP
+			result, err = mediabackup.Build(ctx, source, items, f, target, protected, s.catalog.History, s.backupProgress, options)
 		}
 		var verifiedZIP mediabackup.ZIPVerification
 		if err == nil && format == "zip" {
@@ -218,9 +221,16 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 			}
 		}
 		if result.Path != "" {
+			media.StartProgress(ctx, "registering", 0)
 			var row catalog.BackupRecord
 			var e error
-			if verifiedZIP.Info == nil {
+			if result.Split != nil {
+				if !result.Split.Matches(result.Path) {
+					e = errors.New("分包备份在登记前已变化")
+				} else {
+					row, e = backupRecordFromManifest(result.Path, mediabackup.SplitZIP, result.Split.Size, result.Split.Manifest, result.Split.Bytes)
+				}
+			} else if verifiedZIP.Info == nil {
 				row, e = s.inspectBackupPackage(context.WithoutCancel(ctx), result.Path, false)
 			} else {
 				info, statErr := os.Lstat(result.Path)
@@ -249,6 +259,7 @@ func (s *Media) backupFormat(parent context.Context, target string, f media.Filt
 		defer s.mu.Unlock()
 		s.jobCancel = nil
 		s.state.Phase = "ready"
+		s.state.Progress = nil
 		s.state.Revision++
 		s.state.CheckStage, s.state.CheckWaiting = "", false
 		if result.Path != "" {

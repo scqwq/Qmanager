@@ -75,6 +75,7 @@ func (s *Service) uploadFolderEntries(ctx context.Context, c *Client, db *sql.DB
 			continue
 		}
 		status.Current, status.Step = entry.Path, "checking"
+		status.FileDone, status.FileTotal = 0, 0
 		s.setFolderStatus(account, *status)
 		if parent.state != "" {
 			entry.State, entry.Detail = parent.state, "上级目录无法使用"
@@ -209,7 +210,16 @@ func (s *Service) uploadFolderFile(ctx context.Context, c *Client, db *sql.DB, s
 		now, err := current.Stat()
 		return err == nil && os.SameFile(now, info) && now.Size() == entry.Size && now.ModTime().UnixNano() == entry.Modified
 	}
-	digest, err := uploadDigest(ctx, f, func(int64) {})
+	report := func(step string, done int64) {
+		s.mu.Lock()
+		if s.folderAccount == account && s.folderStatus.Phase == "running" && s.folderStatus.Current == entry.Path {
+			s.folderStatus.Step = step
+			s.folderStatus.FileDone, s.folderStatus.FileTotal = done, info.Size()
+		}
+		s.mu.Unlock()
+	}
+	report("hashing", 0)
+	digest, err := uploadDigest(ctx, f, func(n int64) { report("hashing", n) })
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -225,14 +235,7 @@ func (s *Service) uploadFolderFile(ctx context.Context, c *Client, db *sql.DB, s
 	if err := saveFolderEntry(db, seq, *entry); err != nil {
 		return err
 	}
-	path := entry.Path
-	file, err := c.sendFile(ctx, parent, f, info, digest, unchanged, func(step string, _ int64) {
-		s.mu.Lock()
-		if s.folderAccount == account && s.folderStatus.Phase == "running" && s.folderStatus.Current == path {
-			s.folderStatus.Step = step
-		}
-		s.mu.Unlock()
-	})
+	file, err := c.sendFile(ctx, parent, f, info, digest, unchanged, report)
 	if err != nil {
 		return err
 	}

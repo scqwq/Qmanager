@@ -13,13 +13,25 @@ type BackupMark struct {
 }
 
 type BackupCloud struct {
-	AccountID string    `json:"account_id"`
-	FileID    string    `json:"file_id"`
-	MD5       string    `json:"md5"`
-	Size      int64     `json:"size"`
-	State     string    `json:"state"`
-	Detail    string    `json:"detail"`
-	CheckedAt time.Time `json:"checked_at"`
+	AccountID     string              `json:"account_id"`
+	FolderID      string              `json:"folder_id,omitempty"`
+	Objects       []BackupCloudObject `json:"objects,omitempty"`
+	ExpectedFiles int                 `json:"expected_files,omitempty"`
+	FileID        string              `json:"file_id"`
+	MD5           string              `json:"md5"`
+	Size          int64               `json:"size"`
+	State         string              `json:"state"`
+	Detail        string              `json:"detail"`
+	CheckedAt     time.Time           `json:"checked_at"`
+}
+
+type BackupCloudObject struct {
+	FileID    string `json:"file_id"`
+	ParentID  string `json:"parent_id"`
+	Name      string `json:"name"`
+	Directory bool   `json:"directory,omitempty"`
+	MD5       string `json:"md5"`
+	Size      int64  `json:"size"`
 }
 
 type BackupDisplay struct {

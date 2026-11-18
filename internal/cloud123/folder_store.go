@@ -11,19 +11,21 @@ import (
 )
 
 type FolderUploadStatus struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Phase    string `json:"phase"`
-	Detail   string `json:"detail"`
-	Current  string `json:"current"`
-	Step     string `json:"step"`
-	Total    int    `json:"total"`
-	Uploaded int    `json:"uploaded"`
-	Skipped  int    `json:"skipped"`
-	Failed   int    `json:"failed"`
-	Batch    int    `json:"batch"`
-	Batches  int    `json:"batches"`
-	Issues   int    `json:"issues"`
+	FileDone  int64  `json:"file_done,omitempty"`
+	FileTotal int64  `json:"file_total,omitempty"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Phase     string `json:"phase"`
+	Detail    string `json:"detail"`
+	Current   string `json:"current"`
+	Step      string `json:"step"`
+	Total     int    `json:"total"`
+	Uploaded  int    `json:"uploaded"`
+	Skipped   int    `json:"skipped"`
+	Failed    int    `json:"failed"`
+	Batch     int    `json:"batch"`
+	Batches   int    `json:"batches"`
+	Issues    int    `json:"issues"`
 }
 
 type FolderUploadIssue struct {

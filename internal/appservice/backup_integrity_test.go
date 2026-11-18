@@ -10,6 +10,38 @@ import (
 	"time"
 )
 
+func TestSplitBackupHistoryLifecycle(t *testing.T) {
+	s, c, _, _, row := locationBackup(t, "split_zip")
+	ctx := context.Background()
+	preview, err := s.PreviewHistoryBackup(ctx, row.ID)
+	if err != nil || preview.Record.Format != "split_zip" || preview.Record.Digest != row.Digest {
+		t.Fatalf("split history preview failed: %v", err)
+	}
+	observed, err := s.InspectBackup(ctx, row.ID, true)
+	if err != nil || observed.LocalState != "present" || observed.OriginalFiles == nil || observed.OriginalFiles.Present != row.Files {
+		t.Fatalf("split integrity or source evidence failed: %+v, %v", observed.OriginalFiles, err)
+	}
+	root, members, err := s.BackupUploadMembers(ctx, row)
+	if err != nil || root != row.Path || len(members) != 3 || members["part-001.zip"] == "" || members["backup.json"] == "" {
+		t.Fatalf("unexpected registered upload members: %v, %v", members, err)
+	}
+	if err := s.RestoreBackup(ctx, row.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitBackupJob(t, s)
+	if state := s.State(); state.Error != "" || state.Restore == nil || state.Restore.Fallback != row.Files {
+		t.Fatalf("split restore failed: %s, %+v", state.Error, state.Restore)
+	}
+	if err := s.DeleteBackups(ctx, []string{row.ID}); err != nil {
+		t.Fatal(err)
+	}
+	waitBackupJob(t, s)
+	deleted, err := c.Backup(row.ID)
+	if err != nil || deleted.Status != "deleted" || deleted.DeletePath != "" {
+		t.Fatalf("split deletion did not finish: %s, %s, %v", deleted.Status, deleted.Detail, err)
+	}
+}
+
 func TestZIPPreviewVerificationAndDeletionWithoutUnpackSpace(t *testing.T) {
 	s, c, _, _, row := locationBackup(t, "zip")
 	ctx := context.Background()

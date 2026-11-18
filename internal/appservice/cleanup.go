@@ -138,6 +138,11 @@ func (s *Media) prepareCleanup(ctx context.Context, source media.Source, f media
 	s.state.Bytes = 0
 	s.mu.Unlock()
 	var bytes int64
+	var total int64
+	for _, item := range items {
+		total += max(0, item.Bytes)
+	}
+	checking := media.StartProgress(ctx, "hashing", total)
 	for i, item := range items {
 		if err = ctx.Err(); err != nil {
 			return err
@@ -150,7 +155,7 @@ func (s *Media) prepareCleanup(ctx context.Context, source media.Source, f media
 			row.Status = "skipped"
 			row.Detail = e.Error()
 		} else {
-			row.SHA256, err = mediacleanup.Hash(ctx, item)
+			row.SHA256, err = mediacleanup.Hash(ctx, item, checking)
 			if err != nil {
 				row.Status = "skipped"
 				row.Detail = "无法读取或已变化，已跳过"
@@ -166,7 +171,8 @@ func (s *Media) prepareCleanup(ctx context.Context, source media.Source, f media
 		if row.Status == "skipped" {
 			diagnostics.Record(diagnostics.WithItem(ctx, job.ID, item.InstanceID), "warning", "cleanup.preflight_skipped", "文件未通过预检；具体原因见清理任务")
 		}
-		bytes += item.Bytes
+		bytes += max(0, item.Bytes)
+		checking.Set(bytes)
 		s.backupProgress(i+1, bytes)
 	}
 	if err = s.catalog.PrepareCleanup(job.ID); err != nil {
@@ -261,7 +267,13 @@ func (s *Media) ExecuteMediaDelete(parent context.Context, id string) error {
 				s.mu.Unlock()
 			}
 		}()
-		var bytes int64
+		var bytes, processed, total int64
+		for _, row := range rows {
+			if row.Status == "ready" {
+				total++
+			}
+		}
+		recycling := media.StartProgress(ctx, "recycling", total)
 		for i, row := range rows {
 			if err = ctx.Err(); err != nil {
 				return err
@@ -321,6 +333,8 @@ func (s *Media) ExecuteMediaDelete(parent context.Context, id string) error {
 				return errors.New("Windows 未确认本项回收结果，已停止剩余操作；请查看任务和回收站")
 			}
 			bytes += row.Item.Bytes
+			processed++
+			recycling.Set(processed)
 			s.backupProgress(i+1, bytes)
 		}
 		summary, err := s.catalog.Cleanup(id)

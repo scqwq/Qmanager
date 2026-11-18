@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"qqarchive/internal/catalog"
 	"qqarchive/internal/media"
+	"qqarchive/internal/mediabackup"
 )
 
 // BackupLocation accepts a registered ID, never a frontend-supplied disk path.
@@ -39,7 +40,7 @@ func backupLocationDirectory(row catalog.BackupRecord) (string, error) {
 		return "", errors.New("备份保存位置不存在或无法访问，请连接磁盘或重新定位")
 	}
 	switch row.Format {
-	case "directory":
+	case "directory", mediabackup.SplitZIP:
 		if info.IsDir() {
 			return location, nil
 		}

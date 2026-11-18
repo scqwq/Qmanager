@@ -13,7 +13,8 @@ export interface Bucket {kind:string;month:string;role:string;files:number;bytes
 export interface Report {update_kind?:string;quick?:boolean;entries_checked?:number;known_skipped?:number;inspected?:number; partial:boolean;header_reads:number;reused:number;indexed_updates:number; started_at:string;finished_at:string;complete:boolean;cancelled:boolean;files:number;bytes:number;issues:{path:string;code:string}[];issue_count:number;buckets:Bucket[] }
 export interface BackupResult {path:string;files:number;payload_files:number;excluded:number;bytes:number}
 export interface RestoreResult {written:number;skipped:number;conflicts:number;fallback:number;failed:number;placements:{relative_path:string;status:string;error?:string}[]}
-export interface State {check_stage?:string;check_waiting?:boolean;check_total?:number;check_pass?:number;update_running?:boolean;background_stage?:string;stopping?:boolean;update_mode?:string;needs_full?:boolean;cleanup?:CleanupJob;restore?:RestoreResult;index_bytes:number;cached:boolean;last_full_scan:string;reconcile_seconds:number;discovery?:{root:string;linked:boolean;directories:number;skipped:number;complete:boolean;candidates:{root:string;name:string}[];reason:string};phase:string;mode:string;source:Source|null;sources:SavedSource[];scanned:number;bytes:number;report:Report|null;watching:boolean;coverage:string;revision:number;error:string;message:string;backup:BackupResult|null;excluded:number;excluded_items?:{path:string;code:string}[]}
+export interface TaskProgressState {stage:string;done:number;total:number;part?:number;parts?:number}
+export interface State {progress?:TaskProgressState;verification?:TaskProgressState;check_stage?:string;check_waiting?:boolean;check_total?:number;check_pass?:number;update_running?:boolean;background_stage?:string;stopping?:boolean;update_mode?:string;needs_full?:boolean;cleanup?:CleanupJob;restore?:RestoreResult;index_bytes:number;cached:boolean;last_full_scan:string;reconcile_seconds:number;discovery?:{root:string;linked:boolean;directories:number;skipped:number;complete:boolean;candidates:{root:string;name:string}[];reason:string};phase:string;mode:string;source:Source|null;sources:SavedSource[];scanned:number;bytes:number;report:Report|null;watching:boolean;coverage:string;revision:number;error:string;message:string;backup:BackupResult|null;excluded:number;excluded_items?:{path:string;code:string}[]}
 export interface Filter {source_month?:string;month_from?:string;month_to?:string;include_baseline:boolean;kind:string;month:string;role:string;status:string;min_bytes:number;max_bytes:number;offset:number;limit:number;view:string;from:string;to:string}
 export interface Page {baseline_files:number;items:Item[];total:number;bytes:number}
 export interface Estimate {pending?:number;pending_bytes?:number;excluded_reasons?:Record<string,number>;files:number;bytes:number;excluded:number;estimated_peak:number}
@@ -105,7 +106,7 @@ declare global {interface Window {go?:{main:{App:Bridge}}}}
 export const hasDesktop=()=>Boolean(window.go?.main?.App)
 export function api():Bridge {if(!window.go?.main?.App)throw new Error('请使用 Qman 桌面程序打开。');return window.go.main.App}
 
-export interface CloudUpload {id:string;phase:string;name:string;total:number;done:number;detail:string;remote_id:string}
+export interface CloudUpload {part?:number;parts?:number;id:string;phase:string;name:string;total:number;done:number;detail:string;remote_id:string}
 export interface CloudStatus {logged_in:boolean;account:string;needs_check:boolean;remembered:boolean;note:string;upload:CloudUpload}
 export interface CloudFolder {id:string;name:string}
 export interface CloudFolderPage {folders:CloudFolder[];next:string;more:boolean}
@@ -113,6 +114,7 @@ export interface CloudQR {id:string;image:string;expires_at:string}
 export interface CloudLocalFile {ticket:string;name:string;bytes:number}
 export interface CloudLocalFolder {ticket:string;name:string;files:number;batches:number;issues:number}
 export interface CloudFolderUpload {
+ file_done?:number;file_total?:number;
  id:string;name:string;phase:'running'|'paused'|'complete'|'abandoned'|'';detail:string;current:string;step:string;
  total:number;uploaded:number;skipped:number;failed:number;batch:number;batches:number;issues:number;
 }

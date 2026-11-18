@@ -80,9 +80,17 @@ func deleteQuarantined(ctx context.Context, row catalog.BackupRecord, verified Z
 	if catalog.ManifestDigest([]byte(row.Manifest)) != row.Digest || json.Unmarshal([]byte(row.Manifest), &m) != nil {
 		return errors.New("登记证据无效")
 	}
-	expected, err := expectedTree(m)
-	if err != nil {
-		return err
+	var expected treeSet
+	headerLimit := int64(maxHeader)
+	if row.Format == SplitZIP && m.Layout == SplitZIP {
+		expected, headerLimit = splitTree(m), maxSplitHeader
+	} else if row.Format == "directory" && m.Layout == "" {
+		expected, err = expectedTree(m)
+		if err != nil {
+			return err
+		}
+	} else {
+		return errors.New("备份类型与删除登记不符")
 	}
 	files, dirs, err := inspectTree(ctx, path, expected, true)
 	if err != nil {
@@ -99,7 +107,7 @@ func deleteQuarantined(ctx context.Context, row catalog.BackupRecord, verified Z
 	}
 	checkMetadata := func(name string) error {
 		if name == headerName {
-			b, e := readSmall(ctx, path, name, maxHeader)
+			b, e := readSmall(ctx, path, name, headerLimit)
 			if os.IsNotExist(e) {
 				return nil
 			}
@@ -131,6 +139,11 @@ func deleteQuarantined(ctx context.Context, row catalog.BackupRecord, verified Z
 		}
 		return nil
 	}
+	var total int64
+	for _, name := range files {
+		total += max(0, expected.Files[name].Size)
+	}
+	checking := media.StartProgress(ctx, "verifying", total)
 	for _, name := range files {
 		if name == headerName || name == indexName {
 			if err = checkMetadata(name); err != nil {
@@ -139,7 +152,7 @@ func deleteQuarantined(ctx context.Context, row catalog.BackupRecord, verified Z
 			continue
 		}
 		wanted := expected.Files[name]
-		same, e := sameContent(ctx, root, filepath.FromSlash(name), wanted.Hash, wanted.Size)
+		same, e := checkContent(ctx, root, filepath.FromSlash(name), wanted.Hash, wanted.Size, checking)
 		if e != nil {
 			return e
 		}
@@ -147,6 +160,7 @@ func deleteQuarantined(ctx context.Context, row catalog.BackupRecord, verified Z
 			return errors.New("备份载荷已变化，停止删除")
 		}
 	}
+	deleting := media.StartProgress(ctx, "deleting", total)
 	for _, name := range files {
 		if name == headerName || name == indexName {
 			continue
@@ -155,7 +169,7 @@ func deleteQuarantined(ctx context.Context, row catalog.BackupRecord, verified Z
 			return err
 		}
 		wanted := expected.Files[name]
-		same, e := sameContent(ctx, root, filepath.FromSlash(name), wanted.Hash, wanted.Size)
+		same, e := checkContent(ctx, root, filepath.FromSlash(name), wanted.Hash, wanted.Size, deleting)
 		if e != nil {
 			return e
 		}

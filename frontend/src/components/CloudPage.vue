@@ -2,6 +2,7 @@
 import {computed,nextTick,onMounted,onUnmounted,ref} from 'vue'
 import {api,type CloudFolder,type CloudFolderUpload,type CloudLocalFile,type CloudLocalFolder,type CloudQR,type CloudStatus} from '../api'
 import FeedbackNotice from './FeedbackNotice.vue'
+import TaskProgress from './TaskProgress.vue'
 import {cloudErrorFeedback as errorFeedback,cloudUploadLabels as phaseNames,isCloudUploadActive} from '../cloudFeedback'
 import CloudFolderPicker from './CloudFolderPicker.vue'
 import CloudFolderUploadResult from './CloudFolderUploadResult.vue'
@@ -26,7 +27,6 @@ const folderProcessed=computed(()=>{
 const target=computed(()=>trail.value[trail.value.length-1]),targetPath=computed(()=>trail.value.map(f=>f.name).join(' / '))
 const qrLabels:Record<string,string>={waiting:'等待扫码',scanned:'已扫码，请在手机确认',expired:'二维码已过期',rejected:'已取消扫码'}
 const qrLabel=computed(()=>qrLabels[qrState.value]||'')
-const progress=computed(()=>status.value.upload.total?Math.min(100,Math.round(status.value.upload.done/status.value.upload.total*100)):0)
 const bytes=(n:number)=>n<1024?`${n} B`:`${(n/1024/1024).toLocaleString(undefined,{maximumFractionDigits:2})} MiB`
 let disposed=false,qrTimer:ReturnType<typeof setTimeout>|undefined,statusTimer:ReturnType<typeof setTimeout>|undefined,messageTimer:ReturnType<typeof setTimeout>|undefined,modeGeneration=0
 function notify(text:string){message.value=text;if(messageTimer)clearTimeout(messageTimer);messageTimer=setTimeout(()=>message.value='',8000)}
@@ -159,9 +159,8 @@ onUnmounted(()=>{disposed=true;modeGeneration++;stopQR();if(statusTimer)clearTim
     <button v-else type="button" class="text-button" @click="showFolderResult=true">查看结果</button>
    </div>
    <template v-if="folderUploading">
-    <progress :value="folderProcessed" :max="Math.max(1,folderTask.total)" aria-label="文件夹上传进度"/>
-    <p class="cloud-muted" role="status"><template v-if="folderTask.batch">第 {{folderTask.batch}} / {{folderTask.batches}} 批 · </template>{{folderProcessed}} / {{folderTask.total}} 个文件</p>
-    <p v-if="folderTask.current&&folderTask.current!=='.'" class="cloud-upload-name">{{phaseNames[folderTask.step]}} · {{folderTask.current}}</p>
+    <p role="status">{{phaseNames[folderTask.step]||'正在上传'}} · {{Math.min(folderTask.total,folderProcessed+1)}} / {{folderTask.total}}</p>
+    <TaskProgress label="文件夹上传进度" :done="folderTask.file_total?folderTask.file_done:folderProcessed" :total="folderTask.file_total||folderTask.total"/>
    </template>
    <template v-else-if="folderPaused">
     <p class="cloud-upload-name">{{folderTask.detail}}</p>
@@ -174,11 +173,11 @@ onUnmounted(()=>{disposed=true;modeGeneration++;stopQR();if(statusTimer)clearTim
   </section>
  </template>
  <section v-if="status.upload.id&&!folderUploading" class="cloud-upload" aria-label="上传任务">
-  <div class="cloud-heading"><h3>{{phaseNames[status.upload.phase]||status.upload.phase}}</h3><button v-if="fileUploading" type="button" class="text-button" @click="api().CancelCloudUpload()">取消上传</button></div>
+  <div class="cloud-heading"><h3 role="status">{{phaseNames[status.upload.phase]||status.upload.phase}}<template v-if="fileUploading&&status.upload.part"> · {{status.upload.part}} / {{status.upload.parts}}</template></h3><button v-if="fileUploading" type="button" class="text-button" @click="api().CancelCloudUpload()">取消上传</button></div>
   <p class="cloud-upload-name">{{status.upload.name}}</p>
-  <template v-if="fileUploading"><progress :value="progress" max="100" :aria-label="phaseNames[status.upload.phase]"/><p class="cloud-muted" role="status">{{bytes(status.upload.done)}} / {{bytes(status.upload.total)}}</p></template>
+  <TaskProgress v-if="fileUploading" :label="phaseNames[status.upload.phase]??'上传进度'" :done="status.upload.done" :total="status.upload.total"/>
   <FeedbackNotice v-if="status.upload.phase==='failed'" :feedback="errorFeedback(status.upload.detail)"/>
-  <p v-else-if="status.upload.detail" :class="status.upload.phase==='complete'?'notice success':'notice'" role="status">{{status.upload.detail}}</p>
+  <p v-else-if="status.upload.detail&&status.upload.phase==='cancelled'" :class="status.upload.phase==='complete'?'notice success':'notice'" role="status">{{status.upload.detail}}</p>
  </section>
  </div>
  <CloudFolderPicker v-if="picker" :trail="trail" @close="picker=false" @select="chooseTarget" @login-required="folderLoginRequired"/>

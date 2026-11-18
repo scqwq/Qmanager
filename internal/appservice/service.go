@@ -17,6 +17,8 @@ import (
 )
 
 type State struct {
+	Progress         *media.TaskProgress        `json:"progress,omitempty"`
+	Verification     *media.TaskProgress        `json:"verification,omitempty"`
 	OperationResult  string                     `json:"-"`
 	CheckTotal       int                        `json:"check_total"`
 	CheckPass        int                        `json:"check_pass"`

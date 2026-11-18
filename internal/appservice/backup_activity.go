@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"qqarchive/internal/catalog"
 	"qqarchive/internal/diagnostics"
+	"qqarchive/internal/media"
 	"time"
 )
 
@@ -36,6 +37,17 @@ func (s *Media) InspectBackup(ctx context.Context, id string, explicit ...bool) 
 		if s.busy() {
 			return catalog.BackupRecord{}, errors.New("请等待当前任务结束后检查备份")
 		}
+		ctx = media.WithProgress(ctx, func(progress media.TaskProgress) {
+			s.mu.Lock()
+			s.state.Verification = &progress
+			s.mu.Unlock()
+		})
+		media.StartProgress(ctx, "verifying", 0)
+		defer func() {
+			s.mu.Lock()
+			s.state.Verification = nil
+			s.mu.Unlock()
+		}()
 	}
 	row, err := s.catalog.Backup(id)
 	if err != nil {
@@ -120,7 +132,7 @@ func (s *Media) RecordBackupInspection(row catalog.BackupRecord, cloud *catalog.
 		if r := row.OriginalFiles; r != nil && (r.State == "present" || r.State == "missing" || r.State == "partial") {
 			clearMark("original", r.CheckedAt)
 		}
-		if cloud != nil && d.Cloud != nil && d.Cloud.FileID == cloud.FileID && d.Cloud.AccountID == cloud.AccountID && !d.Cloud.CheckedAt.After(cloud.CheckedAt) {
+		if cloud != nil && d.Cloud != nil && d.Cloud.FileID == cloud.FileID && d.Cloud.FolderID == cloud.FolderID && d.Cloud.AccountID == cloud.AccountID && !d.Cloud.CheckedAt.After(cloud.CheckedAt) {
 			d.Cloud = cloud
 			if cloud.State != "unknown" {
 				clearMark("cloud", now)

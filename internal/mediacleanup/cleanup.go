@@ -54,12 +54,16 @@ func ValidateSource(item media.Item, source media.Source) error {
 	}
 	return nil
 }
-func hash(ctx context.Context, f *os.File, item media.Item) (string, error) {
+func hash(ctx context.Context, f *os.File, item media.Item, p *media.Progress) (string, error) {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return "", err
 	}
 	h := sha256.New()
-	n, err := io.CopyBuffer(h, media.CancelReader{Ctx: ctx, Reader: io.LimitReader(f, item.Bytes+1)}, make([]byte, 1024*1024))
+	var writer io.Writer = h
+	if p != nil {
+		writer = p.Writer(h)
+	}
+	n, err := io.CopyBuffer(writer, media.CancelReader{Ctx: ctx, Reader: io.LimitReader(f, item.Bytes+1)}, make([]byte, 1024*1024))
 	if err != nil {
 		return "", err
 	}
@@ -68,13 +72,17 @@ func hash(ctx context.Context, f *os.File, item media.Item) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
-func Hash(ctx context.Context, item media.Item) (string, error) {
+func Hash(ctx context.Context, item media.Item, progress ...*media.Progress) (string, error) {
 	f, err := media.OpenItem(item)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	return hash(ctx, f, item)
+	var p *media.Progress
+	if len(progress) > 0 {
+		p = progress[0]
+	}
+	return hash(ctx, f, item, p)
 }
 func Recycle(ctx context.Context, item media.Item, expected string) error {
 	if len(expected) != 64 || strings.Trim(expected, "0123456789abcdef") != "" {
@@ -89,7 +97,7 @@ func Recycle(ctx context.Context, item media.Item, expected string) error {
 		if guard.File == nil {
 			return errors.New("文件确认回调重复，已停止")
 		}
-		actual, e := hash(ctx, guard.File, item)
+		actual, e := hash(ctx, guard.File, item, nil)
 		if e != nil {
 			return e
 		}

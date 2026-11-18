@@ -34,6 +34,19 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 	}
 	root := path
 	cleanup := func() {}
+	if info.IsDir() {
+		split, e := IsSplit(ctx, path)
+		if e != nil {
+			return nil, e
+		}
+		if split {
+			m, e := readMetadata(ctx, path)
+			if e != nil {
+				return nil, e
+			}
+			return openSplitPackage(ctx, path, temporary, m)
+		}
+	}
 	if !info.IsDir() {
 		if !info.Mode().IsRegular() {
 			return nil, errors.New("备份不是普通文件或目录")
@@ -47,36 +60,25 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 		if e != nil {
 			return nil, e
 		}
-		temporary, e = media.Canonical(temporary)
+		if e = requireZIPMetadata(names); e != nil {
+			return nil, e
+		}
+		root, cleanup, e = unpackStage(temporary, total)
 		if e != nil {
 			return nil, e
 		}
-		if e = os.MkdirAll(temporary, 0700); e != nil {
-			return nil, e
-		}
-		free, e := storage.Free(temporary)
-		if e != nil || free < total {
-			return nil, ErrPackageSpace
-		}
-		root, e = os.MkdirTemp(temporary, ".qman-media-stage-unpack-")
-		if e != nil {
-			return nil, e
-		}
-		cleanup = func() { safeRemove(root) }
 		ok := false
 		defer func() {
 			if !ok {
 				cleanup()
 			}
 		}()
-		if e = storage.Private(root); e != nil {
-			return nil, e
-		}
 		dest, e := os.OpenRoot(root)
 		if e != nil {
 			return nil, e
 		}
 		defer dest.Close()
+		p := media.StartProgress(ctx, "unpacking", int64(total))
 		extract := func(name string) error {
 			entry := names[name]
 			if entry == nil || entry.FileInfo().IsDir() {
@@ -94,7 +96,7 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 			if e != nil {
 				return e
 			}
-			n, e := io.CopyBuffer(out, media.CancelReader{Ctx: ctx, Reader: io.LimitReader(in, int64(entry.UncompressedSize64)+1)}, make([]byte, 1024*1024))
+			n, e := io.CopyBuffer(p.Writer(out), media.CancelReader{Ctx: ctx, Reader: io.LimitReader(in, int64(entry.UncompressedSize64)+1)}, make([]byte, 1024*1024))
 			ce := out.Close()
 			if e != nil {
 				return e
@@ -116,6 +118,9 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 		m, e := readMetadata(ctx, root)
 		if e != nil {
 			return nil, e
+		}
+		if m.Layout != "" {
+			return nil, errors.New("分包备份请选择外层文件夹")
 		}
 		expected, e := verifyZIPTree(names, m)
 		if e != nil {
@@ -155,6 +160,30 @@ func OpenPackage(ctx context.Context, path, temporary string, progress func(int,
 	}
 	return &Package{Manifest: m, Items: items, Bytes: b, Root: root, Cleanup: cleanup, MetadataBytes: meta}, nil
 }
+
+func unpackStage(temporary string, total uint64) (string, func(), error) {
+	temporary, err := media.Canonical(temporary)
+	if err != nil {
+		return "", nil, err
+	}
+	if err = os.MkdirAll(temporary, 0700); err != nil {
+		return "", nil, err
+	}
+	free, err := storage.Free(temporary)
+	if err != nil || free < total {
+		return "", nil, ErrPackageSpace
+	}
+	root, err := os.MkdirTemp(temporary, ".qman-media-stage-unpack-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { safeRemove(root) }
+	if err = storage.Private(root); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return root, cleanup, nil
+}
 func ZipDirectory(ctx context.Context, path string) (string, error) {
 	return ZipDirectoryTo(ctx, path, path+".zip")
 }
@@ -185,6 +214,20 @@ func WriteVerifiedZIP(ctx context.Context, path, target string) (ZIPVerification
 	defer os.Remove(stage)
 	writer := zip.NewWriter(out)
 	buffer := make([]byte, 1024*1024)
+	var total int64
+	for name, file := range set.Files {
+		if file.Size >= 0 {
+			total += file.Size
+			continue
+		}
+		info, e := os.Lstat(filepath.Join(path, filepath.FromSlash(name)))
+		if e != nil {
+			out.Close()
+			return ZIPVerification{}, e
+		}
+		total += info.Size()
+	}
+	p := media.StartProgress(ctx, "packing", total)
 	for name := range set.Files {
 		if err = ctx.Err(); err != nil {
 			writer.Close()
@@ -199,7 +242,7 @@ func WriteVerifiedZIP(ctx context.Context, path, target string) (ZIPVerification
 		}
 		entry, e := writer.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
 		if e == nil {
-			_, e = io.CopyBuffer(entry, media.CancelReader{Ctx: ctx, Reader: in}, buffer)
+			_, e = io.CopyBuffer(p.Writer(entry), media.CancelReader{Ctx: ctx, Reader: in}, buffer)
 		}
 		in.Close()
 		if e != nil {

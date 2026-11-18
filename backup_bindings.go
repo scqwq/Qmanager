@@ -113,7 +113,7 @@ func (a *App) ChooseBackup(expectedID string) (*appservice.BackupPreview, error)
 	if choice == "ZIP 文件" {
 		path, err = runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择 Qman ZIP 备份", Filters: []runtime.FileFilter{{DisplayName: "Qman ZIP 备份", Pattern: "*.zip"}}, DefaultDirectory: a.dialogDirectory("backup_directory")})
 	} else {
-		path, err = runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择含 backup.json、.qman 和媒体目录树的备份目录", DefaultDirectory: a.dialogDirectory("backup_directory")})
+		path, err = runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "选择备份外层文件夹", DefaultDirectory: a.dialogDirectory("backup_directory")})
 	}
 	if err != nil || path == "" {
 		return nil, err

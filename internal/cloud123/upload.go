@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"qqarchive/internal/media"
 )
 
 type uploadInit struct {
@@ -63,6 +65,9 @@ func (s *Service) StartUpload(parent, ticket string) error {
 type UploadReceipt struct {
 	AccountID string
 	FileID    string
+	ParentID  string
+	Name      string
+	Directory bool
 	MD5       string
 	Size      int64
 }
@@ -138,6 +143,15 @@ func (s *Service) CheckBackupObject(ctx context.Context, receipt UploadReceipt) 
 	if file.Trashed {
 		return "missing", "原文件已移入云盘回收站"
 	}
+	if receipt.Name != "" && (file.Name != receipt.Name || strconv.FormatInt(file.Parent, 10) != receipt.ParentID) {
+		return "changed", "云端文件的位置或名称与上传记录不同"
+	}
+	if receipt.Directory {
+		if file.Type != 1 {
+			return "changed", "云端目录类型与上传记录不同"
+		}
+		return "present", "云端目录已核对"
+	}
 	if file.Type != 0 || file.Size != receipt.Size || !strings.EqualFold(file.MD5, receipt.MD5) {
 		return "changed", "云端对象的大小或 MD5 与上传记录不同"
 	}
@@ -145,16 +159,8 @@ func (s *Service) CheckBackupObject(ctx context.Context, receipt UploadReceipt) 
 }
 
 func (s *Service) startUploadLocked(c *Client, id int64, name string, total int64, phase string, prepare func(context.Context) (chosenFile, func(), error), finish func(UploadReceipt, error) error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	s.cancel = cancel
-	s.done = make(chan struct{})
-	done := s.done
-	s.status.Upload = UploadStatus{ID: randomID(), Phase: phase, Name: name, Total: total}
-	account := accountKey(s.uid)
-	go func() {
-		defer close(done)
-		defer cancel()
-		chosen, cleanup, e := prepare(ctx)
+	s.startUploadTaskLocked(c, name, total, phase, func(ctx context.Context, account string) (remoteFile, error) {
+		chosen, cleanup, e := prepare(s.uploadPreparation(ctx))
 		if cleanup != nil {
 			defer cleanup()
 		}
@@ -164,6 +170,8 @@ func (s *Service) startUploadLocked(c *Client, id int64, name string, total int6
 			s.status.Upload.Total = chosen.info.Size()
 			s.status.Upload.Name = chosen.info.Name()
 			s.status.Upload.Phase = "checking"
+			s.status.Upload.Done = 0
+			s.status.Upload.Part, s.status.Upload.Parts = 0, 0
 			s.mu.Unlock()
 			file, e = s.upload(ctx, c, id, chosen)
 		}
@@ -171,6 +179,35 @@ func (s *Service) startUploadLocked(c *Client, id int64, name string, total int6
 			receipt := UploadReceipt{AccountID: account, FileID: strconv.FormatInt(file.ID, 10), MD5: file.MD5, Size: file.Size}
 			e = errors.Join(e, finish(receipt, e))
 		}
+		return file, e
+	})
+}
+
+func (s *Service) uploadPreparation(ctx context.Context) context.Context {
+	return media.WithProgress(ctx, func(p media.TaskProgress) {
+		phase := "preparing"
+		if p.Stage == "packing" {
+			phase = "packing"
+		}
+		s.mu.Lock()
+		status := &s.status.Upload
+		status.Phase, status.Done, status.Total = phase, p.Done, p.Total
+		status.Part, status.Parts = p.Part, p.Parts
+		s.mu.Unlock()
+	})
+}
+
+func (s *Service) startUploadTaskLocked(c *Client, name string, total int64, phase string, run func(context.Context, string) (remoteFile, error)) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancel = cancel
+	s.done = make(chan struct{})
+	done := s.done
+	s.status.Upload = UploadStatus{ID: randomID(), Phase: phase, Name: name, Total: total}
+	account := accountKey(s.uid)
+	go func() {
+		defer close(done)
+		defer cancel()
+		file, e := run(ctx, account)
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.cancel = nil
@@ -194,6 +231,7 @@ func (s *Service) startUploadLocked(c *Client, id int64, name string, total int6
 		s.status.Upload.Phase = "complete"
 		s.status.Upload.Name = file.Name
 		s.status.Upload.Done = file.Size
+		s.status.Upload.Total = file.Size
 		s.status.Upload.RemoteID = strconv.FormatInt(file.ID, 10)
 		s.status.Upload.Detail = "上传完成，大小和MD5核对一致"
 	}()

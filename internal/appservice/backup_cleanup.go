@@ -63,7 +63,7 @@ func (s *Media) PrepareBackupSourceDelete(parent context.Context, ids []string) 
 				return errors.New("备份历史清单校验不符，未清理")
 			}
 			var manifest mediabackup.Manifest
-			if err = json.Unmarshal([]byte(row.Manifest), &manifest); err != nil || manifest.Format != mediabackup.Format || manifest.Version != mediabackup.Version || manifest.ID != id || manifest.SourceID == "" || len(manifest.Entries) > media.MaxFiles {
+			if err = json.Unmarshal([]byte(row.Manifest), &manifest); err != nil || manifest.ID != id || manifest.SourceID == "" {
 				return errors.New("备份历史清单无效或不受支持")
 			}
 			if sourceID == "" {

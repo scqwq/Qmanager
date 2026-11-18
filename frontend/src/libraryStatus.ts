@@ -1,5 +1,12 @@
 import type {State} from './api'
 
+const taskStages:Record<string,string>={
+ checking:'正在核对文件',hashing:'正在校验文件内容',copying:'正在复制媒体',packing:'正在打包',
+ verifying:'正在校验备份',unpacking:'正在展开备份',restoring:'正在保存媒体',registering:'正在登记备份',
+ exporting:'正在导出媒体',recycling:'正在回收原文件',deleting:'正在删除备份'
+}
+export const progressPhases=new Set(['preparing_backup','backup','exporting','restoring','preparing_delete','recycling','deleting'])
+
 export function coverageExplanation(value:string){
  if(/停顿|时钟/.test(value))return '电脑曾长时间停顿或系统时间改变，期间的文件变化可能没有完整记录。'
  if(/通知异常|积压|溢出/.test(value))return '文件变化通知异常或来得太多，可能漏掉了部分变化。'
@@ -12,13 +19,16 @@ export function coverageExplanation(value:string){
 
 export function libraryStatus(state:State){
  const gap=state.needs_full?coverageExplanation(state.coverage)||'部分文件变化可能没有完整记录。':''
+ if(progressPhases.has(state.phase)&&state.progress){
+  const work=state.progress
+  const title=(taskStages[work.stage]??'正在处理')+(work.part&&work.parts&&work.parts>1?` · ${work.part} / ${work.parts} ${work.stage==='deleting'?'份':'包'}`:'')
+  return {title,description:'',gap,tone:gap?'warning':'info',working:true}
+ }
  if(state.phase==='exporting')return {title:state.check_stage==='stability'?'正在核对所选文件':'正在导出媒体',description:'',gap,tone:gap?'warning':'info',working:true}
  if(['preparing_backup','preparing_delete'].includes(state.phase)){
   const deleting=state.phase==='preparing_delete'
   const files=deleting?'待回收文件':'备份文件'
-  const title=state.check_stage==='stability'?`正在核对${files}是否停止变化（第 ${state.check_pass||1} 轮）`:state.check_stage==='hashing'?'正在核对待回收文件的内容，尚未删除':`正在准备本次所选${files}`
-  const description=state.check_waiting?'正在短暂等待，随后再次核对所选文件；可以取消任务。':deleting?'只检查本次所选文件，自动补足稳定性核对；完成后仍需确认才会回收。':'只检查本次所选文件，自动补足稳定性核对后再复制；变化或不可读的项目会说明原因。'
-  return {title,description,gap,tone:gap?'warning':'info',working:true}
+  return {title:`正在准备${files}`,description:'',gap,tone:gap?'warning':'info',working:true}
  }
  const tasks:Record<string,string>={backup:'正在复制并校验备份',verifying:'正在检查所选文件',discovering:'正在查找账号媒体目录',restoring:'正在加载并保存媒体',deleting:'正在处理所选备份包',recycling:'正在将确认的文件移入回收站'}
  if(tasks[state.phase])return {title:tasks[state.phase],description:'',gap,tone:gap?'warning':'info',working:true}

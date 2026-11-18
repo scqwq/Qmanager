@@ -26,6 +26,7 @@ func (s *Media) observeSelection(ctx context.Context, source media.Source, items
 		s.mu.Unlock()
 	}()
 	for pass := 1; pass <= 3 && len(todo) > 0; pass++ {
+		p := media.StartProgress(ctx, "checking", int64(len(todo)))
 		s.mu.Lock()
 		s.state.CheckStage = "stability"
 		s.state.CheckPass, s.state.CheckTotal, s.state.Scanned = pass, len(todo), 0
@@ -66,6 +67,7 @@ func (s *Media) observeSelection(ctx context.Context, source media.Source, items
 			s.mu.Lock()
 			s.state.Scanned = n + 1
 			s.mu.Unlock()
+			p.Set(int64(n + 1))
 		}
 		todo = nil
 		if len(checked) == 0 {

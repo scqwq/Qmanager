@@ -1,12 +1,12 @@
 import {errorFeedback,type Feedback} from './feedback'
 
 export const cloudUploadLabels:Record<string,string>={
- preparing:'核对备份',checking:'检查文件',hashing:'计算文件摘要',initializing:'准备上传',
+ preparing:'核对备份',packing:'正在打包',checking:'检查文件',hashing:'计算文件摘要',initializing:'准备上传',
  authorizing:'获取上传地址',uploading:'上传中',completing:'完成登记',verifying:'核对结果',
  complete:'上传完成',failed:'上传未完成',cancelled:'已取消'
 }
 
-const activeUploadPhases=new Set(['preparing','checking','hashing','initializing','authorizing','uploading','completing','verifying'])
+const activeUploadPhases=new Set(['preparing','packing','checking','hashing','initializing','authorizing','uploading','completing','verifying'])
 export function isCloudUploadActive(phase:string){return activeUploadPhases.has(phase)}
 
 export function cloudErrorFeedback(value:unknown):Feedback {

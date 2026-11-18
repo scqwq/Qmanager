@@ -26,7 +26,7 @@ func (s *Media) PreviewHistoryBackup(ctx context.Context, id string) (BackupPrev
 	if err != nil {
 		return BackupPreview{}, err
 	}
-	preview, e := s.previewBackup(ctx, row.Path, row.Format != "zip", row.ID)
+	preview, e := s.previewBackup(ctx, row.Path, row.Format == "directory", row.ID)
 	preview.PreviousPath = ""
 	if e != nil {
 		s.op.Lock()
@@ -67,6 +67,17 @@ func (s *Media) inspectBackupPackage(ctx context.Context, path string, previewOn
 			return catalog.BackupRecord{}, err
 		}
 		return backupRecordFromManifest(path, "zip", metadata.Info.Size(), metadata.Manifest, metadata.Bytes, expectedID...)
+	}
+	split, err := mediabackup.IsSplit(ctx, path)
+	if err != nil {
+		return catalog.BackupRecord{}, err
+	}
+	if split {
+		metadata, e := mediabackup.InspectSplit(ctx, path, !previewOnly)
+		if e != nil {
+			return catalog.BackupRecord{}, e
+		}
+		return backupRecordFromManifest(path, mediabackup.SplitZIP, metadata.Size, metadata.Manifest, metadata.Bytes, expectedID...)
 	}
 	pack, err := mediabackup.OpenPackage(ctx, path, filepath.Join(s.private, "temporary"), nil)
 	if err != nil {

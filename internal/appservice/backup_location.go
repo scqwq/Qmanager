@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"qqarchive/internal/catalog"
 	"qqarchive/internal/media"
+	"qqarchive/internal/mediabackup"
 	"time"
 )
 
@@ -63,7 +64,7 @@ func observeBackupLocation(row *catalog.BackupRecord) {
 		row.LocalState, row.LocalDetail = "unavailable", "位置无法读取；请检查磁盘或权限，未确认删除"
 		return
 	}
-	if row.Format == "directory" && !info.IsDir() || row.Format == "zip" && !info.Mode().IsRegular() {
+	if (row.Format == "directory" || row.Format == mediabackup.SplitZIP) && !info.IsDir() || row.Format == "zip" && !info.Mode().IsRegular() {
 		row.LocalState, row.LocalDetail = "changed", "位置对象类型与登记不符；操作前必须重新定位并校验"
 		return
 	}

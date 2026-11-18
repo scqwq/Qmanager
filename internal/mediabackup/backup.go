@@ -37,6 +37,8 @@ type Manifest struct {
 	RestorePrefix string       `json:"restore_prefix,omitempty"`
 	Format        string       `json:"format"`
 	Version       int          `json:"version"`
+	Layout        string       `json:"layout,omitempty"`
+	Parts         []SplitPart  `json:"parts,omitempty"`
 	ID            string       `json:"id"`
 	CreatedAt     time.Time    `json:"created_at"`
 	SourceID      string       `json:"source_id"`
@@ -54,12 +56,13 @@ type Preview struct {
 	EstimatedPeak   int64          `json:"estimated_peak"`
 }
 type Result struct {
-	StagingRemainder string `json:"-"`
-	Path             string `json:"path"`
-	Files            int    `json:"files"`
-	PayloadFiles     int    `json:"payload_files"`
-	Excluded         int    `json:"excluded"`
-	Bytes            int64  `json:"bytes"`
+	StagingRemainder string         `json:"-"`
+	Path             string         `json:"path"`
+	Files            int            `json:"files"`
+	PayloadFiles     int            `json:"payload_files"`
+	Excluded         int            `json:"excluded"`
+	Bytes            int64          `json:"bytes"`
+	Split            *SplitMetadata `json:"-"`
 }
 
 func reason(item media.Item) string {
@@ -79,7 +82,10 @@ func Estimate(items []media.Item, f media.Filter) Preview {
 	return estimate(items, f, nil)
 }
 
-type BuildOptions struct{ Excluded map[string]string }
+type BuildOptions struct {
+	Excluded map[string]string
+	SplitZIP bool
+}
 
 func exclusion(item media.Item, extra map[string]string) string {
 	if why := extra[item.InstanceID]; why != "" {
@@ -154,10 +160,11 @@ func Build(ctx context.Context, source media.Source, items []media.Item, f media
 	if err != nil || !info.IsDir() {
 		return result, errors.New("备份目标目录不可用")
 	}
-	var extra map[string]string
+	var opts BuildOptions
 	if len(options) > 0 {
-		extra = options[0].Excluded
+		opts = options[0]
 	}
+	extra := opts.Excluded
 	p := estimate(items, f, extra)
 	if p.Files == 0 {
 		return result, errors.New("当前条件没有可备份的稳定文件")
@@ -193,9 +200,23 @@ func Build(ctx context.Context, source media.Source, items []media.Item, f media
 			}
 		}
 	}
+	if opts.SplitZIP {
+		for _, item := range items {
+			if media.Matches(item, f) && exclusion(item, extra) == "" {
+				path, e := PayloadPath(m, Entry{Item: item})
+				if e != nil {
+					return result, e
+				}
+				if e = checkSplitSize(path, item.Bytes, SplitZIPLimit); e != nil {
+					return result, e
+				}
+			}
+		}
+	}
 	names := map[string]bool{}
 	metadataBytes := 0
 	buffer := make([]byte, 1024*1024)
+	copying := media.StartProgress(ctx, "copying", p.Bytes)
 	for _, item := range items {
 		if err = ctx.Err(); err != nil {
 			return result, err
@@ -248,7 +269,7 @@ func Build(ctx context.Context, source media.Source, items []media.Item, f media
 			return result, e
 		}
 		hash := sha256.New()
-		n, e := io.CopyBuffer(io.MultiWriter(out, hash), media.CancelReader{Ctx: ctx, Reader: io.LimitReader(input, item.Bytes+1)}, buffer)
+		n, e := io.CopyBuffer(copying.Writer(io.MultiWriter(out, hash)), media.CancelReader{Ctx: ctx, Reader: io.LimitReader(input, item.Bytes+1)}, buffer)
 		stable := media.SameItem(input, item)
 		input.Close()
 		se := out.Sync()
@@ -272,9 +293,6 @@ func Build(ctx context.Context, source media.Source, items []media.Item, f media
 	if err = writeMetadata(ctx, stage, &m); err != nil {
 		return result, fmt.Errorf("写入备份说明和索引: %w", err)
 	}
-	if _, _, err = Open(ctx, stage, nil); err != nil {
-		return result, fmt.Errorf("发布前校验目录树: %w", err)
-	}
 	if err = ctx.Err(); err != nil {
 		return result, err
 	}
@@ -282,6 +300,17 @@ func Build(ctx context.Context, source media.Source, items []media.Item, f media
 		return result, err
 	}
 	output := filepath.Join(target, "Qman-"+time.Now().Format("20060102-150405")+"-"+m.ID[:8])
+	if opts.SplitZIP {
+		verified, e := writeSplit(ctx, stage, output, m, SplitZIPLimit)
+		if e != nil {
+			return result, e
+		}
+		result.Path, result.Split = output, &verified
+		return result, nil
+	}
+	if _, _, err = Open(ctx, stage, nil); err != nil {
+		return result, fmt.Errorf("发布前校验目录树: %w", err)
+	}
 	if err = publishTree(ctx, stage, output); err != nil {
 		return result, fmt.Errorf("发布备份目录失败: %w", err)
 	}
@@ -324,6 +353,9 @@ func Open(ctx context.Context, path string, progress func(int, int64)) (Manifest
 	if err != nil {
 		return m, nil, err
 	}
+	if m.Layout != "" {
+		return m, nil, errors.New("分包备份需要通过备份加载入口打开")
+	}
 	expected, err := expectedTree(m)
 	if err != nil {
 		return m, nil, err
@@ -333,6 +365,7 @@ func Open(ctx context.Context, path string, progress func(int, int64)) (Manifest
 	}
 	items := []media.Item{}
 	buffer := make([]byte, 1024*1024)
+	p := media.StartProgress(ctx, "verifying", m.head().Bytes)
 	var bytes int64
 	for _, e := range m.Entries {
 		if err = ctx.Err(); err != nil {
@@ -345,7 +378,7 @@ func Open(ctx context.Context, path string, progress func(int, int64)) (Manifest
 		if er != nil {
 			return m, nil, er
 		}
-		physical, er := verifyFile(ctx, root, rel, e.SHA256, e.Item.Bytes, buffer)
+		physical, er := verifyFile(ctx, root, rel, e.SHA256, e.Item.Bytes, buffer, p)
 		if er != nil {
 			return m, nil, er
 		}

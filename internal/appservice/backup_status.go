@@ -62,7 +62,7 @@ func (s *Media) inspectOriginalFiles(ctx context.Context, row catalog.BackupReco
 		return nil, errors.New("备份历史清单校验不符")
 	}
 	var manifest mediabackup.Manifest
-	if err := json.Unmarshal([]byte(row.Manifest), &manifest); err != nil || manifest.Format != mediabackup.Format || manifest.Version != mediabackup.Version || manifest.ID != row.ID || len(manifest.Entries) > media.MaxFiles {
+	if err := json.Unmarshal([]byte(row.Manifest), &manifest); err != nil || manifest.ID != row.ID {
 		return nil, errors.New("历史清单无效或不受支持")
 	}
 	status := &catalog.BackupFileStatus{State: "unlinked"}

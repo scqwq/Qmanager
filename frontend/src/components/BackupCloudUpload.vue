@@ -3,6 +3,7 @@ import {computed,onMounted,onUnmounted,ref} from 'vue'
 import {api,type BackupRecord,type CloudFolder,type CloudStatus} from '../api'
 import CloudFolderPicker from './CloudFolderPicker.vue'
 import FeedbackNotice from './FeedbackNotice.vue'
+import TaskProgress from './TaskProgress.vue'
 import {cloudErrorFeedback,cloudUploadLabels,isCloudUploadActive} from '../cloudFeedback'
 
 const props=defineProps<{row:BackupRecord}>()
@@ -16,6 +17,11 @@ const active=computed(()=>isCloudUploadActive(status.value?.upload.phase??''))
 const task=computed(()=>started.value?status.value?.upload:null)
 const loginRequired=computed(()=>!started.value&&status.value!==null&&!status.value.logged_in&&!status.value.needs_check)
 const labels={...cloudUploadLabels,checking:'核对目标目录'} as Record<string,string>
+const stage=computed(()=>{
+ const work=task.value
+ if(!work)return ''
+ return (labels[work.phase]??work.phase)+(active.value&&work.part&&work.parts?` · ${work.part} / ${work.parts} 项`:'')
+})
 let timer:ReturnType<typeof setTimeout>|undefined,disposed=false
 let previousFocus:HTMLElement|null=null
 
@@ -113,10 +119,10 @@ onUnmounted(()=>{
    </div>
    <p v-if="active&&!started" role="status">已有上传正在进行。</p>
    <template v-if="task">
-    <p role="status">{{labels[task.phase]??task.phase}}</p>
-    <progress v-if="active" :value="task.total?task.done/task.total:undefined" max="1" aria-label="上传进度"/>
+    <p role="status">{{stage}}</p>
+    <TaskProgress v-if="active" :label="stage" :done="task.done" :total="task.total"/>
     <FeedbackNotice v-if="task.phase==='failed'" :feedback="cloudErrorFeedback(task.detail)"/>
-    <p v-else-if="task.detail">{{task.detail}}</p>
+    <p v-else-if="task.phase==='cancelled'&&task.detail">{{task.detail}}</p>
    </template>
    <FeedbackNotice v-if="error" :feedback="cloudErrorFeedback(error)"/>
    <div class="modal-actions">

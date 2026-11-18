@@ -32,6 +32,9 @@ func expectedTree(m Manifest) (treeSet, error) {
 		if err != nil {
 			return s, err
 		}
+		if strings.Count(p, "/") > 32 {
+			return s, errors.New("备份目录树过深")
+		}
 		key := strings.ToLower(p)
 		if folded[key] {
 			return s, errors.New("载荷路径重复")
@@ -128,7 +131,7 @@ func inspectTree(ctx context.Context, root string, s treeSet, missing bool) ([]s
 	}
 	return files, dirs, nil
 }
-func verifyFile(ctx context.Context, root, path, hash string, size int64, buffer []byte) (media.Item, error) {
+func verifyFile(ctx context.Context, root, path, hash string, size int64, buffer []byte, p *media.Progress) (media.Item, error) {
 	f, err := media.OpenRelative(root, filepath.FromSlash(path))
 	if err != nil {
 		return media.Item{}, err
@@ -147,7 +150,7 @@ func verifyFile(ctx context.Context, root, path, hash string, size int64, buffer
 		return media.Item{}, errors.New("载荷被替换")
 	}
 	digest := sha256.New()
-	n, err := io.CopyBuffer(digest, media.CancelReader{Ctx: ctx, Reader: io.LimitReader(f, size+1)}, buffer)
+	n, err := io.CopyBuffer(p.Writer(digest), media.CancelReader{Ctx: ctx, Reader: io.LimitReader(f, size+1)}, buffer)
 	after, se := f.Stat()
 	if err != nil {
 		return media.Item{}, err

@@ -51,6 +51,7 @@ func (s *Media) DeleteBackups(parent context.Context, ids []string) error {
 			s.state.OperationResult = summary
 			s.mu.Unlock()
 		}()
+		p := media.StartProgress(ctx, "deleting", int64(len(total)))
 		for i, id := range ids {
 			if err = ctx.Err(); err != nil {
 				return err
@@ -59,6 +60,7 @@ func (s *Media) DeleteBackups(parent context.Context, ids []string) error {
 				continue
 			}
 			seen[id] = true
+			p.Part(len(seen), len(total))
 			row, e := s.catalog.Backup(id)
 			if e != nil {
 				return e
@@ -119,6 +121,7 @@ func (s *Media) DeleteBackups(parent context.Context, ids []string) error {
 			}
 			s.backupEvent(row, "删除本地备份包", row.Detail)
 			s.backupProgress(i+1, 0)
+			p.Set(int64(len(seen)))
 		}
 		if err = ctx.Err(); err != nil {
 			return err
@@ -184,7 +187,7 @@ func (s *Media) deleteBackup(ctx context.Context, row *catalog.BackupRecord, pro
 		if e != nil {
 			return e
 		}
-		if row.Format == "directory" && !info.IsDir() || row.Format == "zip" && !info.Mode().IsRegular() {
+		if (row.Format == "directory" || row.Format == mediabackup.SplitZIP) && !info.IsDir() || row.Format == "zip" && !info.Mode().IsRegular() {
 			return errors.New("备份位置对象类型已变化，请重新定位并校验")
 		}
 		var verified mediabackup.ZIPVerification
@@ -198,6 +201,12 @@ func (s *Media) deleteBackup(ctx context.Context, row *catalog.BackupRecord, pro
 				return errors.New("ZIP在删除准备时变化，已停止")
 			}
 			digest = catalog.ManifestDigest(verified.Bytes)
+		} else if row.Format == mediabackup.SplitZIP {
+			checked, e := mediabackup.InspectSplit(ctx, path, true)
+			if e != nil {
+				return e
+			}
+			digest = catalog.ManifestDigest(checked.Bytes)
 		} else {
 			pack, e := mediabackup.OpenPackage(ctx, path, filepath.Join(s.private, "temporary"), nil)
 			if e != nil {

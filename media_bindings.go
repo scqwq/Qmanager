@@ -53,7 +53,12 @@ func (a *App) PrepareBackupSourceDelete(ids []string) error {
 	return a.media.PrepareBackupSourceDelete(a.ctx, ids)
 }
 func (a *App) ExecuteMediaDelete(id string) error                      { return a.media.ExecuteMediaDelete(a.ctx, id) }
+func (a *App) PrepareCleanupResume(id string) error                    { return a.media.PrepareCleanupResume(a.ctx, id) }
 func (a *App) GetMediaDeleteJob(id string) (catalog.CleanupJob, error) { return a.media.CleanupJob(id) }
 func (a *App) GetMediaDeleteItems(id string, offset, limit int) ([]catalog.CleanupItem, error) {
 	return a.media.CleanupItems(id, offset, limit)
+}
+
+func (a *App) GetCleanupAttempts(job, instance string) ([]catalog.CleanupAttempt, error) {
+	return a.media.CleanupAttempts(job, instance)
 }

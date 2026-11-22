@@ -55,6 +55,7 @@ export function backupPresence(row:BackupRecord,key:BackupPresenceKey):Presence 
 export function cleanupLabel(row:BackupRecord){
  const result=row.cleanup_result
  if(!result)return row.source_cleanup_job?'有回收任务记录':'尚未回收'
+ if(result.state==='archived')return '过期预检明细已回收'
  if(result.state==='preparing')return '正在检查待回收文件'
  if(result.state==='prepared')return result.remaining?'已检查，等待你确认回收':'检查完成，无可回收文件'
  if(result.state==='running')return '正在移入回收站'
@@ -67,7 +68,7 @@ export function cleanupLabel(row:BackupRecord){
 
 export function cleanupCounts(row:BackupRecord){
  const result=row.cleanup_result
- if(!result||result.state==='preparing')return ''
+ if(!result||result.state==='preparing'||result.state==='archived')return ''
  if(result.state==='prepared')return result.remaining?`待回收：${result.remaining} 个文件`:''
  const parts:string[]=[]
  if(result.recycled||result.state==='running')parts.push(`已回收：${result.recycled} 个`)

@@ -33,7 +33,7 @@ const includeBaseline=ref(false),querying=ref(false)
 const error=ref(''),action=ref(false),desktop=ref(hasDesktop()),listing=ref(false),selected=ref<Item|null>(null)
 const mediaURL=ref(''),playError=ref(false),history=ref<History[]>([]),failed=ref(new Set<string>())
 let timer:ReturnType<typeof setInterval>|undefined,polling=false,generation=0,disposed=false
-const busy=computed(()=>action.value||['exporting','preparing_backup','backup','verifying','discovering','restoring','deleting','preparing_delete','recycling'].includes(state.value.phase))
+const busy=computed(()=>action.value||['organizing','exporting','preparing_backup','backup','verifying','discovering','restoring','deleting','preparing_delete','recycling'].includes(state.value.phase))
 const scanning=computed(()=>state.value.phase==='scanning')
 const currentPage=computed<FeedbackPage>(()=>settingsPage.value?'settings':historyPage.value?'history':'media')
 const pendingBackupLoad=ref<{page:FeedbackPage;revision:number}|null>(null)
@@ -328,7 +328,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
    </div>
   </template>
   <button class="nav-item settings-nav" :class="{active:settingsPage}" :disabled="!desktop" @click="settingsPage=true;historyPage=false">设置</button>
-  <div class="sidebar-footer">本机处理 <span>0.9.9</span></div>
+  <div class="sidebar-footer">本机处理 <span>0.10.0</span></div>
  </aside>
  <main>
   <header class="topbar">
@@ -401,7 +401,7 @@ onUnmounted(()=>{disposed=true;if(timer)clearInterval(timer);window.removeEventL
   </div>
  </main>
  <div v-if="selected" class="modal-backdrop" @click.self="closeDetail"><section class="detail-modal" role="dialog" aria-modal="true" aria-label="媒体详情"><button class="close-modal" @click="closeDetail" aria-label="关闭详情">×</button><div class="detail-preview"><video v-if="mediaURL&&selected.format==='iso-bmff'&&!playError" :src="mediaURL" :poster="selected.cover_id&&!failed.has(selected.id)?thumb(selected):undefined" controls preload="metadata" @error="playError=true"></video><img v-else-if="mediaURL&&!playError" :src="mediaURL" alt="媒体预览" @error="playError=true"/><span v-else>{{playError?'此文件当前无法预览；可能缺少对应编码支持。':'此格式暂不支持内置预览，原文件已保留。'}}</span></div><h2>{{name(selected)}}</h2><dl><dt>源相对路径</dt><dd>{{selected.relative_path}}</dd><dt>类型 / 来源角色</dt><dd>{{kindName(selected.kind)}} / {{roles[selected.role]}}</dd><dt>来源月份</dt><dd>{{selected.source_month||'未知'}}</dd><dt>逻辑大小 / 格式</dt><dd>{{bytes(selected.bytes)}} / {{selected.format}} · {{statuses[selected.status]}}</dd><dt>首次记录时间</dt><dd>{{fmtTime(selected.first_seen_at)}} · {{methods[selected.observation_method]??'未知'}}</dd><dt>稳定性</dt><dd>{{selected.stability==='stable_heuristic'?'通过稳定性检查（启发式）':readiness(selected)||'状态未知'}}</dd><dt>稳定观察时间</dt><dd>{{fmtTime(selected.stable_observed_at)}}</dd><dt>文件系统创建时间</dt><dd>{{fmtTime(selected.fs_created_at)}}</dd><dt>文件系统修改时间</dt><dd>{{fmtTime(selected.fs_modified_at)}}</dd></dl><details v-if="history.length" class="history"><summary>查看已保存的观察记录（{{history.length}}）</summary><p v-for="(h,i) in history" :key="i">{{fmtTime(h.at)}} · {{eventNames[h.kind]??h.kind}}</p></details><p>首次记录时间来自 Qman 的观察记录。稳定和文件头识别无法证明文件已完整下载。</p></section></div>
- <MediaDeleteDialog v-if="manager.dialog" :job="manager.dialog" :busy="busy" :read-only="manager.dialogReadOnly" @close="manager.dialog=null" @confirm="executeDelete"/><BackupExportDialog v-if="exportFilter" :initial="exportFilter" :selection="backupSelection" :submitting="backupSubmitting" :submit-error="backupError" :revision="state.revision" @close="exportFilter=null" @confirm="backup"/>
+ <MediaDeleteDialog v-if="manager.dialog" :job="manager.dialog" :busy="busy" :read-only="manager.dialogReadOnly" @close="manager.dialog=null" @confirm="executeDelete" @resume="manager.resume"/><BackupExportDialog v-if="exportFilter" :initial="exportFilter" :selection="backupSelection" :submitting="backupSubmitting" :submit-error="backupError" :revision="state.revision" @close="exportFilter=null" @confirm="backup"/>
  <OperationPrompt v-if="prompt" v-bind="prompt" @close="closePrompt"/>
  <BackupLoadDialog v-if="loadPreview" :preview="loadPreview" @close="loadPreview=null" @confirm="confirmLoad"/>
 </div>

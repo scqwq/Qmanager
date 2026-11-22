@@ -115,6 +115,9 @@ func NewMedia(c *catalog.Catalog, private string) (*Media, error) {
 			break
 		}
 	}
+	if !c.StorageReady() {
+		s.state.Phase = "organizing"
+	}
 	return s, nil
 }
 

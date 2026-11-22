@@ -5,6 +5,7 @@ import {computed,nextTick,onMounted,onUnmounted,ref} from 'vue'
 import {api,pathSettingsChanged,type PathSettings} from '../api'
 import HelpTip from './HelpTip.vue'
 import AppearanceSettings from './AppearanceSettings.vue'
+import DatabaseStorage from './DatabaseStorage.vue'
 import LogsPage from './LogsPage.vue'
 import CloudPage from './CloudPage.vue'
 
@@ -109,6 +110,7 @@ onUnmounted(()=>{disposed=true;const id=searchID;finishSearch(id);if(id)void api
  </form>
  <section class="settings-records" aria-label="应用记录">
   <div class="records-actions"><button type="button" class="secondary" :disabled="disabled" @click="emit('exportRecords')">备份应用记录</button><HelpTip label="关于备份应用记录" text="导出 Qman 保存的媒体清单、观察历史和操作记录的数据和缓存，不包含图片、视频等原文件。目前仅支持导出，缓存指索引查询数据。"/></div>
+  <DatabaseStorage :busy="busy"/>
   <FeedbackNotice v-if="recordsError" :feedback="errorFeedback(recordsError)"/><p v-if="recordsMessage" class="notice success" role="status">{{recordsMessage}}</p>
  </section>
  <section class="settings-log-entry">

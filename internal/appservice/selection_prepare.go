@@ -97,6 +97,8 @@ func (s *Media) observeSelection(ctx context.Context, source media.Source, items
 
 func selectionSkipMessage(code string) string {
 	switch code {
+	case "original_unindexed":
+		return "原实例已不在当前清单，可能已删除、替换或重新出现，已跳过"
 	case "unreadable_or_changed":
 		return "文件缺失、不可读或与所选记录不符，已跳过；请更新后重新选择"
 	case "instance_changed":

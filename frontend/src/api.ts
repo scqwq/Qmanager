@@ -28,8 +28,11 @@ export interface BackupDisplay {marks?:Partial<Record<BackupPresenceKey,{state:B
 export interface BackupEvent {at:string;action:string;detail:string}
 export interface BackupRecord {selected_only?:boolean;display?:BackupDisplay;has_loaded?:boolean;original_files?:BackupFileStatus;cleanup_result?:BackupCleanupStatus;restore_result?:BackupRestoreStatus;local_state?:string;local_detail?:string;location_checked_at?:string;source_cleanup_job?:string;source_cleanup_detail?:string;id:string;name:string;path:string;format:string;created_at:string;files:number;bytes:number;selection:Filter;digest:string;status:string;detail:string}
 export interface BackupPreview {ticket?:string;previous_path?:string;target_note?:string;record:BackupRecord;restore_prefix:string;target:string}
-export interface CleanupJob {pending?:number;backup_ids?:string[];id:string;source_id:string;source_name:string;root:string;state:string;created_at:string;expires_at:string;filter:Filter;total:number;ready:number;skipped:number;recycled:number;failed:number;uncertain:number;bytes:number}
-export interface CleanupItem {item:Item;sha256:string;status:string;detail:string}
+export interface DatabaseUsage {bytes:number;used:number;reusable:number;limit:number;transaction_bytes:number}
+export interface DatabaseMaintenance {before:DatabaseUsage;after:DatabaseUsage;previews:number;notifications:number}
+export interface CleanupJob {archived?:boolean;executed?:boolean;unavailable?:number;missing?:number;pending?:number;backup_ids?:string[];id:string;source_id:string;source_name:string;root:string;state:string;created_at:string;expires_at:string;filter:Filter;total:number;ready:number;skipped:number;recycled:number;failed:number;uncertain:number;bytes:number}
+export interface CleanupAttempt {attempt:number;status:string;at:string;detail:string;reason:string}
+export interface CleanupItem {reason?:string;updated_at?:string;attempts?:number;item:Item;sha256:string;status:string;detail:string}
 export interface CleanupRequest {exclude_ids?:string[];ids:string[];all_matching:boolean;filter:Filter}
 interface Bridge {
  // Source and observation
@@ -81,6 +84,8 @@ interface Bridge {
 
  // Cleanup and task controls
  PrepareMediaDelete(request:CleanupRequest):Promise<void>
+ PrepareCleanupResume(id:string):Promise<void>
+ GetCleanupAttempts(job:string,instance:string):Promise<CleanupAttempt[]>
  PrepareBackupSourceDelete(ids:string[]):Promise<void>
  ExecuteMediaDelete(id:string):Promise<void>
  GetMediaDeleteJob(id:string):Promise<CleanupJob>
@@ -89,6 +94,8 @@ interface Bridge {
  OperationReminder(operation:string,path:string,confirm:boolean):Promise<string>
 
  // Settings and diagnostics
+ GetDatabaseUsage():Promise<DatabaseUsage>
+ CompactDatabase():Promise<DatabaseMaintenance>
  GetSettings():Promise<PathSettings>
  SaveSettings(settings:PathSettings):Promise<PathSettings>
  ChooseSettingsDirectory(kind:string,current:string):Promise<string>

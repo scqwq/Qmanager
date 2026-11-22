@@ -30,7 +30,7 @@ export function libraryStatus(state:State){
   const files=deleting?'待回收文件':'备份文件'
   return {title:`正在准备${files}`,description:'',gap,tone:gap?'warning':'info',working:true}
  }
- const tasks:Record<string,string>={backup:'正在复制并校验备份',verifying:'正在检查所选文件',discovering:'正在查找账号媒体目录',restoring:'正在加载并保存媒体',deleting:'正在处理所选备份包',recycling:'正在将确认的文件移入回收站'}
+ const tasks:Record<string,string>={organizing:'正在整理应用记录',backup:'正在复制并校验备份',verifying:'正在检查所选文件',discovering:'正在查找账号媒体目录',restoring:'正在加载并保存媒体',deleting:'正在处理所选备份包',recycling:'正在将确认的文件移入回收站'}
  if(tasks[state.phase])return {title:tasks[state.phase],description:'',gap,tone:gap?'warning':'info',working:true}
  if(state.phase==='scanning')return {title:state.update_mode==='full'?'正在检查当前账号的全部受支持媒体':'正在补充新文件',description:'可以继续浏览已有清单；终止更新会保留已经保存的记录。',gap,tone:gap?'warning':'info',working:true}
  if(state.background_stage)return {title:state.background_stage==='stability'?'正在检查新发现或变化的文件':state.background_stage==='changes'?'正在检查发生变化的路径':'正在定期查找新文件',description:'这是后台检查，可以继续浏览和筛选。',gap,tone:gap?'warning':'info',working:false}

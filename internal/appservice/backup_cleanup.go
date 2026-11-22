@@ -33,6 +33,13 @@ func (s *Media) PrepareBackupSourceDelete(parent context.Context, ids []string) 
 		return errors.New("请选择同一原来源的 1～100 份备份")
 	}
 	return s.backupJob(parent, "preparing_delete", func(ctx context.Context) error {
+		resume, err := s.resumableBackupCleanup(ids)
+		if err != nil {
+			return err
+		}
+		if resume != "" {
+			return s.resumeCleanup(ctx, resume)
+		}
 		s.mu.Lock()
 		s.state.Cleanup = nil
 		s.mu.Unlock()
@@ -147,7 +154,10 @@ func (s *Media) PrepareBackupSourceDelete(parent context.Context, ids []string) 
 			} else if reason == "" {
 				current, e := s.catalog.Item(source.ID, id)
 				if e != nil {
-					reason = "原实例已不在当前清单，可能已删除、替换或重新出现，已跳过"
+					reason = "original_unindexed"
+					if !errors.Is(e, sql.ErrNoRows) {
+						reason = "unavailable"
+					}
 				} else if !sameBackupVersion(item, current) {
 					reason = "当前记录已不是备份时的原版本，已跳过"
 				} else {
@@ -176,11 +186,11 @@ func (s *Media) recordBackupSourceCleanup(job catalog.CleanupJob) error {
 	if len(job.BackupIDs) == 0 {
 		return nil
 	}
-	label := map[string]string{"preparing": "预检中，尚未删除", "prepared": "待确认，尚未删除", "completed": "任务结束", "partial": "部分完成", "interrupted": "任务中断，未自动继续"}[job.State]
+	label := map[string]string{"preparing": "预检中，尚未删除", "prepared": "待确认，尚未删除", "completed": "任务结束", "partial": "部分完成", "interrupted": "任务中断，未自动继续", "archived": "过期预检明细已回收"}[job.State]
 	if label == "" {
 		label = job.State
 	}
-	detail := fmt.Sprintf("%s；联合清单：回收 %d，跳过 %d，失败 %d，待核对 %d，未处理 %d", label, job.Recycled, job.Skipped, job.Failed, job.Uncertain, job.Ready+job.Pending)
+	detail := fmt.Sprintf("%s；回收 %d，跳过 %d（已不存在 %d），无法核实 %d，其他失败 %d，待核对 %d，未处理 %d", label, job.Recycled, job.Skipped, job.Missing, job.Unavailable, job.Failed-job.Unavailable, job.Uncertain, job.Ready+job.Pending)
 	for _, id := range job.BackupIDs {
 		row, err := s.catalog.Backup(id)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -190,16 +200,24 @@ func (s *Media) recordBackupSourceCleanup(job catalog.CleanupJob) error {
 		if err != nil {
 			return err
 		}
+		current := row.CleanupResult
+		unchanged := row.SourceCleanupJob == job.ID && current != nil && current.State == job.State && current.Recycled == job.Recycled && current.Skipped == job.Skipped && current.Failed == job.Failed && current.Uncertain == job.Uncertain && current.Remaining == job.Ready+job.Pending && current.Missing == job.Missing && current.Unavailable == job.Unavailable
+		if unchanged && row.SourceCleanupDetail == detail {
+			continue
+		}
 		row.SourceCleanupJob = job.ID
 		row.SourceCleanupDetail = detail
 		row.CleanupResult = cleanupBackupStatus(job)
+		if unchanged {
+			row.CleanupResult.At = current.At
+		}
 		if row.OriginalFiles != nil {
 			row.OriginalFiles.Stale = true
 		}
 		if err = s.catalog.SaveBackup(row); err != nil {
 			return err
 		}
-		if job.State != "preparing" && job.State != "running" {
+		if !unchanged && job.State != "preparing" && job.State != "running" {
 			s.backupEvent(row, "源文件回收", detail)
 		}
 	}

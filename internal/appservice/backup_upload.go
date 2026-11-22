@@ -14,6 +14,9 @@ import (
 )
 
 func (s *Media) PrepareBackupUpload(ctx context.Context, id string) (catalog.BackupRecord, error) {
+	if !s.catalog.StorageReady() {
+		return catalog.BackupRecord{}, errors.New("应用记录迁移尚未完成")
+	}
 	row, err := s.catalog.Backup(id)
 	if err != nil {
 		return row, err

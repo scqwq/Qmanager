@@ -123,8 +123,15 @@ func TestCleanupOnDemandChecksRejectChangesAndCancel(t *testing.T) {
 				}
 			} else {
 				rows, err := c.CleanupItems(job.ID, 0, 60)
-				if err != nil || job.Skipped != 1 || !strings.Contains(rows[0].Detail, "与所选记录不符") {
+				if err != nil || job.Skipped != 1 {
 					t.Fatal("missing specific exclusion", err, job)
+				}
+				if action == "missing" {
+					if rows[0].Reason != "missing" || job.Missing != 1 || !strings.Contains(rows[0].Detail, "已不存在") {
+						t.Fatal("missing file was not reported separately", rows[0], job)
+					}
+				} else if !strings.Contains(rows[0].Detail, "与所选记录不符") {
+					t.Fatal("changed version lost its exclusion", rows[0])
 				}
 			}
 		})

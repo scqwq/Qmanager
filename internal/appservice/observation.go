@@ -134,6 +134,11 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 		}
 	}
 	scan := func(targets []string, full bool, stage string) bool {
+		boundary, boundaryErr := s.catalog.EventBoundary(source.ID)
+		if boundaryErr != nil {
+			s.fail(boundaryErr)
+			return false
+		}
 		beforeGaps := gapCount
 		root, e := media.OpenRelative(source.Resolved, ".")
 		if e != nil {
@@ -193,6 +198,12 @@ func (s *Media) observe(ctx context.Context, source media.Source, done chan stru
 		if e = s.catalog.Apply(ctx, source.ID, &r, initial, created, covered, time.Now().UTC()); e != nil {
 			s.fail(e)
 			return false
+		}
+		if r.Complete && (full || targets != nil) {
+			if e = s.catalog.ProcessedEvents(ctx, source.ID, boundary, r.Covered, full); e != nil {
+				s.fail(e)
+				return false
+			}
 		}
 		initial = false
 		if full && r.Complete {

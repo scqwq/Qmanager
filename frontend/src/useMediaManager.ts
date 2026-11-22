@@ -14,16 +14,17 @@ export function useMediaManager(state:Ref<State>,busy:Ref<boolean>,getFilter:()=
  function selection(){return {ids:all.value?[]:[...ids.value],exclude_ids:all.value?[...excluded.value]:[],all_matching:all.value,filter:{...getFilter(),offset:0}}}
  async function prepare(){previousJob=state.value.cleanup?.id??'';waiting=true;backupRequest=false;dialogReadOnly.value=false;dialog.value=null;await run(()=>api().PrepareMediaDelete(selection()))}
  async function prepareBackups(backupIDs:string[]){previousJob=state.value.cleanup?.id??'';waiting=true;backupRequest=true;requestedBackups=JSON.stringify([...new Set(backupIDs)].sort());dialogReadOnly.value=false;dialog.value=null;await run(()=>api().PrepareBackupSourceDelete(backupIDs));if(state.value.phase!=='preparing_delete'&&state.value.cleanup?.id===previousJob){waiting=false;backupRequest=false}}
+ async function resume(id:string){previousJob=id;requestedBackups=JSON.stringify([...(dialog.value?.backup_ids??[])].sort());waiting=true;backupRequest=true;dialogReadOnly.value=false;dialog.value=null;await run(()=>api().PrepareCleanupResume(id))}
  async function execute(id:string){dialog.value=null;await run(()=>api().ExecuteMediaDelete(id));ids.value=new Set();all.value=false}
  async function results(jobID?:string){const id=typeof jobID==='string'?jobID:state.value.cleanup?.id;if(id)await run(async()=>{dialogReadOnly.value=true;dialog.value=await api().GetMediaDeleteJob(id)})}
  watch(()=>[state.value.phase,state.value.cleanup?.id,state.value.cleanup?.state],()=>{
   const job=state.value.cleanup
   if(!waiting||state.value.phase!=='ready')return
   const expected=!backupRequest||JSON.stringify([...(job?.backup_ids??[])].sort())===requestedBackups
-  if(job?.state==='prepared'&&job.id!==previousJob&&expected){waiting=false;dialog.value=job}
+  if(job?.state==='prepared'&&expected){waiting=false;dialog.value=job}
   else if(state.value.error||!job||job.state==='interrupted'){waiting=false;backupRequest=false}
  })
  watch(()=>`${state.value.mode}:${state.value.source?.id}`,()=>{if(backupRequest&&(waiting||(dialog.value?.source_id===state.value.source?.id&&state.value.mode==='source'))){ids.value=new Set();excluded.value=new Set();all.value=false}else{clear()};active.value=false})
  watch(()=>JSON.stringify({...getFilter(),offset:0}),()=>{if(!waiting||!backupRequest)clear()})
- return {active,ids,all,dialog,dialogReadOnly,clear,toggle,select,isSelected,pageSelected,selectPage,selectAll,selection,prepare,prepareBackups,execute,results,manualCount:computed(()=>ids.value.size),excludedCount:computed(()=>excluded.value.size)}
+ return {active,ids,all,dialog,dialogReadOnly,clear,toggle,select,isSelected,pageSelected,selectPage,selectAll,selection,prepare,prepareBackups,resume,execute,results,manualCount:computed(()=>ids.value.size),excludedCount:computed(()=>excluded.value.size)}
 }

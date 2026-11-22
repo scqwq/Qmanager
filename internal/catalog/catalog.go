@@ -14,14 +14,21 @@ import (
 	"path/filepath"
 	"qqarchive/internal/media"
 	"qqarchive/internal/storage"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const maxIndexBytes int64 = 1 << 30
 
 type Catalog struct {
-	db   *sql.DB
-	path string
+	storageReady atomic.Bool
+	cleanupRefMu sync.Mutex
+	cleanupRefID string
+	cleanupRefs  map[string][]manifestItem
+	db           *sql.DB
+	path         string
 }
 type SavedSource struct {
 	ID   string `json:"id"`
@@ -36,6 +43,15 @@ type Record struct {
 }
 
 func Open(path string) (*Catalog, error) {
+	return openCatalog(path, true)
+}
+
+// Desktop migration waits for Wails' single-instance lock in OnStartup.
+func OpenDesktop(path string) (*Catalog, error) {
+	return openCatalog(path, false)
+}
+
+func openCatalog(path string, migrate bool) (*Catalog, error) {
 	p, err := media.Canonical(path)
 	if err != nil {
 		return nil, err
@@ -64,7 +80,7 @@ CREATE TABLE IF NOT EXISTS watch_events(id INTEGER PRIMARY KEY,source TEXT NOT N
 		return nil, err
 	}
 	var version int
-	if err = db.QueryRow("SELECT version FROM qman_meta").Scan(&version); err != nil || version != 1 {
+	if err = db.QueryRow("SELECT version FROM qman_meta").Scan(&version); err != nil || version != 1 && version != 2 {
 		db.Close()
 		return nil, errors.New("索引版本不受支持")
 	}
@@ -80,6 +96,21 @@ CREATE TABLE IF NOT EXISTS watch_events(id INTEGER PRIMARY KEY,source TEXT NOT N
 	if err = c.initCleanup(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if err = c.initEvidence(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = c.initNotifications(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if migrate {
+		err = c.MigrateStorage()
+	}
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("迁移应用记录失败，原事务已回滚：%w", err)
 	}
 	return c, nil
 }
@@ -139,8 +170,8 @@ func (c *Catalog) Gap(id, reason string, start, end time.Time) error {
 // Apply retains every instance/version. Baseline and discontinuous scans never
 // claim a download time; only a matching native creation event is live evidence.
 func (c *Catalog) Apply(ctx context.Context, id string, r *media.Report, initial bool, created map[string]time.Time, covered bool, now time.Time) error {
-	if info, err := os.Stat(c.path); err == nil && info.Size() > maxIndexBytes {
-		return fmt.Errorf("索引容量已超过 %d GiB", maxIndexBytes>>30)
+	if err := checkCapacity(ctx, c.db, 0); err != nil {
+		return err
 	}
 	previous, err := c.activeForReport(ctx, id, r)
 	if err != nil {
@@ -189,9 +220,6 @@ func (c *Catalog) Apply(ctx context.Context, id string, r *media.Report, initial
 	if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM events").Scan(&eventCount); err != nil {
 		return err
 	}
-	if eventCount >= 1000000 {
-		return errors.New("观察历史达到容量上限")
-	}
 	event := func(instance, kind, detail string) error {
 		eventCount++
 		if eventCount > 1000000 {
@@ -199,6 +227,20 @@ func (c *Catalog) Apply(ctx context.Context, id string, r *media.Report, initial
 		}
 		_, e := tx.ExecContext(ctx, "INSERT INTO events(source,instance,at,kind,detail) VALUES(?,?,?,?,?)", id, instance, now.UTC().Format(time.RFC3339Nano), kind, detail)
 		return e
+	}
+	var budget int64
+	for _, item := range r.Items {
+		old, ok := active[item.RelativePath]
+		if !ok || old.Item.Identity != item.Identity || old.Item.Bytes != item.Bytes || !old.Item.ModifiedAt.Equal(item.ModifiedAt) {
+			b, e := json.Marshal(item)
+			if e != nil {
+				return e
+			}
+			budget += int64(len(b))*2 + 2048
+		}
+	}
+	if err = checkCapacity(ctx, tx, budget); err != nil {
+		return err
 	}
 	used := map[string]bool{}
 	observedIDs := []string{}
@@ -396,19 +438,28 @@ func (c *Catalog) RestoreEvidence(id string, payload []byte) error {
 	}
 	var previous string
 	err := c.db.QueryRow("SELECT manifest FROM restored_backups WHERE id=?", id).Scan(&previous)
+	if err == nil && strings.HasPrefix(previous, "snapshot:") {
+		previous, err = c.snapshot(strings.TrimPrefix(previous, "snapshot:"))
+	}
 	if err == nil && previous != string(payload) {
 		return errors.New("备份编号已存在但清单不同")
 	}
 	if err != nil && !isNoRows(err) {
 		return err
 	}
-	if isNoRows(err) {
-		if info, e := os.Stat(c.path); e == nil && info.Size()+int64(len(payload)) > maxIndexBytes {
-			return errors.New("索引容量不足以保存观察证据；已复制媒体仍保留")
-		}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
 	}
-	_, err = c.db.Exec("INSERT INTO restored_backups VALUES(?,?,?) ON CONFLICT(id) DO NOTHING", id, string(payload), time.Now().UTC().Format(time.RFC3339Nano))
-	return err
+	defer tx.Rollback()
+	ref, err := storeManifest(context.Background(), tx, id, payload)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec("INSERT INTO restored_backups VALUES(?,?,?) ON CONFLICT(id) DO NOTHING", id, "snapshot:"+ref, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (c *Catalog) Export(ctx context.Context, parent string) (string, error) {
 	target, err := media.Canonical(parent)

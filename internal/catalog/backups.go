@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"os"
 	"time"
 )
 
@@ -58,14 +57,16 @@ type BackupFileStatus struct {
 	Unknown   int       `json:"unknown"`
 }
 type BackupCleanupStatus struct {
-	State     string    `json:"state"`
-	At        time.Time `json:"at"`
-	Joint     bool      `json:"joint"`
-	Recycled  int       `json:"recycled"`
-	Skipped   int       `json:"skipped"`
-	Failed    int       `json:"failed"`
-	Uncertain int       `json:"uncertain"`
-	Remaining int       `json:"remaining"`
+	Missing     int       `json:"missing"`
+	Unavailable int       `json:"unavailable"`
+	State       string    `json:"state"`
+	At          time.Time `json:"at"`
+	Joint       bool      `json:"joint"`
+	Recycled    int       `json:"recycled"`
+	Skipped     int       `json:"skipped"`
+	Failed      int       `json:"failed"`
+	Uncertain   int       `json:"uncertain"`
+	Remaining   int       `json:"remaining"`
 }
 type BackupRestoreStatus struct {
 	State      string     `json:"state"`
@@ -94,6 +95,7 @@ type storedBackup struct {
 	PackageCheck *BackupPackageCheck `json:"package_check,omitempty"`
 	Record       BackupRecord        `json:"record"`
 	Manifest     string              `json:"manifest"`
+	ManifestRef  string              `json:"manifest_ref,omitempty"`
 	DeletePath   string              `json:"delete_path"`
 }
 
@@ -105,6 +107,12 @@ func (c *Catalog) Backup(id string) (BackupRecord, error) {
 		err = json.Unmarshal([]byte(payload), &row)
 	}
 	row.Record.Manifest, row.Record.DeletePath, row.Record.PackageCheck = row.Manifest, row.DeletePath, row.PackageCheck
+	if err == nil && row.ManifestRef != "" {
+		row.Record.Manifest, err = c.snapshot(row.ManifestRef)
+		if err == nil && ManifestDigest([]byte(row.Record.Manifest)) != row.Record.Digest {
+			err = errors.New("备份登记与固定清单不符")
+		}
+	}
 	return row.Record, err
 }
 func (c *Catalog) Backups() ([]BackupRecord, error) {
@@ -181,10 +189,8 @@ func (c *Catalog) SaveBackup(row BackupRecord) error {
 	if err != nil && !isNoRows(err) {
 		return err
 	}
+	newRecord := isNoRows(err)
 	if err != nil {
-		if info, e := os.Stat(c.path); e == nil && info.Size()+int64(len(row.Manifest))*2 > maxIndexBytes {
-			return errors.New("索引容量不足以登记此备份，请先备份并维护索引")
-		}
 		var n int
 		if err = c.db.QueryRow("SELECT count(*) FROM backup_records").Scan(&n); err != nil {
 			return err
@@ -193,12 +199,28 @@ func (c *Catalog) SaveBackup(row BackupRecord) error {
 			return errors.New("备份历史达到上限")
 		}
 	}
-	b, err := json.Marshal(storedBackup{Record: row, Manifest: row.Manifest, DeletePath: row.DeletePath, PackageCheck: row.PackageCheck})
+	tx, err := c.db.Begin()
 	if err != nil {
 		return err
 	}
-	_, err = c.db.Exec("INSERT INTO backup_records VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", row.ID, string(b))
-	return err
+	defer tx.Rollback()
+	ref, err := storeManifest(context.Background(), tx, row.ID, []byte(row.Manifest))
+	if err != nil {
+		return err
+	}
+	b, err := json.Marshal(storedBackup{Record: row, ManifestRef: ref, DeletePath: row.DeletePath, PackageCheck: row.PackageCheck})
+	if err != nil {
+		return err
+	}
+	if newRecord {
+		if err = checkCapacity(context.Background(), tx, int64(len(b))+4096); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec("INSERT INTO backup_records VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", row.ID, string(b)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func ManifestDigest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 
@@ -263,17 +285,83 @@ WHERE json_extract(payload,'$.record.source_cleanup_job')=?`, "关联预检因�
 	return invalidated, tx.Commit()
 }
 func (c *Catalog) SaveImport(id string, payload []byte) error {
+	return c.saveImport(id, payload, false)
+}
+
+func (c *Catalog) saveImport(id string, payload []byte, migration bool) error {
+	originalPayload := string(payload)
 	if len(payload) > 192*1024*1024 {
 		return errors.New("加载结果超过容量上限")
 	}
-	if info, e := os.Stat(c.path); e == nil && info.Size()+int64(len(payload)) > maxIndexBytes {
-		return errors.New("索引容量不足以保存加载记录；已复制媒体仍保留")
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return err
 	}
-	_, err := c.db.Exec("INSERT INTO backup_imports VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", id, string(payload))
-	return err
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if manifest, ok := data["manifest"]; ok && string(manifest) != "null" {
+		var ref string
+		var e error
+		if migration {
+			ref, e = storeManifestMigration(tx, id, manifest)
+		} else {
+			ref, e = storeManifest(context.Background(), tx, id, manifest)
+		}
+		if e != nil {
+			return e
+		}
+		data["manifest_ref"], _ = json.Marshal(ref)
+		delete(data, "manifest")
+		payload, e = json.Marshal(data)
+		if e != nil {
+			return e
+		}
+	}
+	var old int64
+	err = tx.QueryRow("SELECT length(CAST(payload AS BLOB)) FROM backup_imports WHERE id=?", id).Scan(&old)
+	if err != nil && !isNoRows(err) {
+		return err
+	}
+	if extra := int64(len(payload)) - old; extra > 0 && !migration {
+		if err = checkCapacity(context.Background(), tx, extra+4096); err != nil {
+			return err
+		}
+	}
+	if migration {
+		_, err = tx.Exec("UPDATE backup_imports SET payload=? WHERE id=? AND payload=?", string(payload), id, originalPayload)
+	} else {
+		_, err = tx.Exec("INSERT INTO backup_imports VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", id, string(payload))
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (c *Catalog) Import(id string) ([]byte, error) {
 	var payload string
 	err := c.db.QueryRow("SELECT payload FROM backup_imports WHERE id=?", id).Scan(&payload)
-	return []byte(payload), err
+	if err != nil {
+		return nil, err
+	}
+	var data map[string]json.RawMessage
+	if err = json.Unmarshal([]byte(payload), &data); err != nil {
+		return nil, err
+	}
+	if value, ok := data["manifest_ref"]; ok {
+		var ref string
+		if err = json.Unmarshal(value, &ref); err != nil {
+			return nil, err
+		}
+		manifest, e := c.snapshot(ref)
+		if e != nil {
+			return nil, e
+		}
+		data["manifest"] = json.RawMessage(manifest)
+		delete(data, "manifest_ref")
+		return json.Marshal(data)
+	}
+	return []byte(payload), nil
 }

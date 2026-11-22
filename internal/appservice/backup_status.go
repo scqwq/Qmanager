@@ -16,6 +16,7 @@ import (
 
 func cleanupBackupStatus(job catalog.CleanupJob) *catalog.BackupCleanupStatus {
 	return &catalog.BackupCleanupStatus{State: job.State, At: time.Now().UTC(), Joint: len(job.BackupIDs) > 1,
+		Missing: job.Missing, Unavailable: job.Unavailable,
 		Recycled: job.Recycled, Skipped: job.Skipped, Failed: job.Failed, Uncertain: job.Uncertain, Remaining: job.Ready + job.Pending}
 }
 

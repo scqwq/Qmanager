@@ -4,8 +4,14 @@ import (
 	"fmt"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"qqarchive/internal/appservice"
+	"qqarchive/internal/catalog"
 	"qqarchive/internal/diagnostics"
 )
+
+func (a *App) GetDatabaseUsage() (catalog.DatabaseUsage, error) { return a.media.DatabaseUsage(a.ctx) }
+func (a *App) CompactDatabase() (catalog.DatabaseMaintenance, error) {
+	return a.media.CompactDatabase(a.ctx)
+}
 
 func (a *App) GetSettings() (appservice.PathSettings, error) { return a.media.Settings() }
 func (a *App) GetDiagnostics() (diagnostics.Snapshot, error) { return diagnostics.Read() }

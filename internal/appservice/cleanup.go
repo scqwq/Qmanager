@@ -21,10 +21,20 @@ type CleanupRequest struct {
 }
 
 func (s *Media) RecoverCleanup() error {
+	if err := s.catalog.MigrateStorage(); err != nil {
+		s.mu.Lock()
+		s.state.Phase = "migration_failed"
+		s.state.Error = "应用记录迁移未完成：" + err.Error()
+		s.mu.Unlock()
+		return err
+	}
 	if err := s.catalog.RecoverBackupRestores(); err != nil {
 		return err
 	}
 	if err := s.catalog.RecoverCleanup(); err != nil {
+		return err
+	}
+	if _, err := s.catalog.Sweep(context.Background(), time.Now()); err != nil {
 		return err
 	}
 	s.mu.RLock()
@@ -44,6 +54,12 @@ func (s *Media) RecoverCleanup() error {
 		s.state.Cleanup = job
 		s.mu.Unlock()
 	}
+	s.mu.Lock()
+	if s.state.Phase == "organizing" {
+		s.state.Phase = "ready"
+		s.state.Revision++
+	}
+	s.mu.Unlock()
 	return nil
 }
 
@@ -91,6 +107,11 @@ func (s *Media) prepareCleanup(ctx context.Context, source media.Source, f media
 	if err != nil {
 		return err
 	}
+	return s.checkCleanup(ctx, source, job, items, hashes, skips)
+}
+
+func (s *Media) checkCleanup(ctx context.Context, source media.Source, job catalog.CleanupJob, items []media.Item, hashes map[string]string, skips map[string]string) error {
+	var err error
 	ctx = diagnostics.WithItem(ctx, job.ID, "")
 	diagnostics.Record(ctx, "info", "cleanup.prepare", fmt.Sprintf("开始核对 %d 个文件", len(items)))
 	if err = s.recordBackupSourceCleanup(job); err != nil {
@@ -117,9 +138,20 @@ func (s *Media) prepareCleanup(ctx context.Context, source media.Source, f media
 		blocked[id] = reason
 	}
 	for _, item := range items {
+		if blocked[item.InstanceID] == "original_unindexed" && mediacleanup.ValidateSource(item, source) == nil {
+			if reason, _ := cleanupPresence(item); reason != "" {
+				blocked[item.InstanceID] = reason
+			}
+		}
 		if blocked[item.InstanceID] == "" {
 			if err := mediacleanup.ValidateSource(item, source); err != nil {
 				blocked[item.InstanceID] = err.Error()
+				var pathError *os.PathError
+				if errors.As(err, &pathError) {
+					blocked[item.InstanceID] = "unavailable"
+				}
+			} else if reason, _ := cleanupPresence(item); reason != "" {
+				blocked[item.InstanceID] = reason
 			}
 		}
 	}
@@ -151,6 +183,12 @@ func (s *Media) prepareCleanup(ctx context.Context, source media.Source, f media
 		if reason := skips[item.InstanceID]; reason != "" {
 			row.Status = "skipped"
 			row.Detail = selectionSkipMessage(reason)
+			if reason == "missing" || reason == "unavailable" || reason == "unreadable_or_changed" {
+				markCleanupPresence(&row)
+				if row.Reason == "" {
+					row.Reason = "changed"
+				}
+			}
 		} else if e := mediacleanup.Validate(item, source); e != nil {
 			row.Status = "skipped"
 			row.Detail = e.Error()
@@ -159,6 +197,7 @@ func (s *Media) prepareCleanup(ctx context.Context, source media.Source, f media
 			if err != nil {
 				row.Status = "skipped"
 				row.Detail = "无法读取或已变化，已跳过"
+				markCleanupPresence(&row)
 			} else if expected := hashes[item.InstanceID]; expected != "" && row.SHA256 != expected {
 				row.Status = "skipped"
 				row.Detail = "当前内容与备份实际保存的内容不同，已跳过"
@@ -296,7 +335,15 @@ func (s *Media) ExecuteMediaDelete(parent context.Context, id string) error {
 			if e = mediacleanup.Validate(row.Item, source); e != nil {
 				row.Status = "skipped"
 				row.Detail = e.Error()
+				var pathError *os.PathError
+				if errors.As(e, &pathError) {
+					row.Status = "failed"
+					row.Reason = "unavailable"
+				}
 			} else {
+				markCleanupPresence(&row)
+			}
+			if row.Status == "ready" {
 				row.Status = "processing"
 				if err = s.catalog.SaveCleanupItem(ctx, job, row); err != nil {
 					return err
@@ -363,7 +410,7 @@ func (s *Media) ExecuteMediaDelete(parent context.Context, id string) error {
 		s.state.Cleanup = &summary
 		s.state.Report = report
 		s.state.Cached = false
-		s.state.Message = fmt.Sprintf("删除结束：回收 %d，跳过 %d，失败 %d，待核对 %d。未清空回收站，不代表已释放空间。", summary.Recycled, summary.Skipped, summary.Failed, summary.Uncertain)
+		s.state.Message = fmt.Sprintf("删除结束：回收 %d，跳过 %d（已不存在 %d），无法核实 %d，其他失败 %d，待核对 %d。", summary.Recycled, summary.Skipped, summary.Missing, summary.Unavailable, summary.Failed-summary.Unavailable, summary.Uncertain)
 		s.mu.Unlock()
 		return nil
 	})

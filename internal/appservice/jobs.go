@@ -8,6 +8,9 @@ import (
 )
 
 func (s *Media) busy() bool {
+	if !s.catalog.StorageReady() {
+		return true
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.jobCancel != nil {

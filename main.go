@@ -99,7 +99,7 @@ func startDiagnostics(private string) {
 		if e = logger.EnableCrashOutput(); e != nil {
 			logger.Record(context.Background(), "warning", "crash.capture_unavailable", "Go 崩溃详情记录未能启用")
 		}
-		logger.Record(context.Background(), "info", "app.start", "Qman 0.9.9 / diagnostics-1 启动")
+		logger.Record(context.Background(), "info", "app.start", "Qman 0.10.0 / diagnostics-1 启动")
 	}
 }
 func main() {
@@ -122,7 +122,7 @@ func main() {
 	if err = storage.Private(private); err != nil {
 		log.Fatal("无法建立私有应用数据目录：", err)
 	}
-	c, err := catalog.Open(filepath.Join(private, "catalog.sqlite"))
+	c, err := catalog.OpenDesktop(filepath.Join(private, "catalog.sqlite"))
 	if err != nil {
 		log.Fatal("无法打开应用索引：", err)
 	}

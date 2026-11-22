@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"qqarchive/internal/storage"
 	"time"
 )
+
+const maxIndexBytes int64 = 1 << 30
 
 type Catalog struct {
 	db   *sql.DB
@@ -136,8 +139,8 @@ func (c *Catalog) Gap(id, reason string, start, end time.Time) error {
 // Apply retains every instance/version. Baseline and discontinuous scans never
 // claim a download time; only a matching native creation event is live evidence.
 func (c *Catalog) Apply(ctx context.Context, id string, r *media.Report, initial bool, created map[string]time.Time, covered bool, now time.Time) error {
-	if info, err := os.Stat(c.path); err == nil && info.Size() > 512*1024*1024 {
-		return errors.New("索引达到 512 MiB 上限，请备份后维护索引")
+	if info, err := os.Stat(c.path); err == nil && info.Size() > maxIndexBytes {
+		return fmt.Errorf("索引容量已超过 %d GiB", maxIndexBytes>>30)
 	}
 	previous, err := c.activeForReport(ctx, id, r)
 	if err != nil {
@@ -400,7 +403,7 @@ func (c *Catalog) RestoreEvidence(id string, payload []byte) error {
 		return err
 	}
 	if isNoRows(err) {
-		if info, e := os.Stat(c.path); e == nil && info.Size()+int64(len(payload)) > 512*1024*1024 {
+		if info, e := os.Stat(c.path); e == nil && info.Size()+int64(len(payload)) > maxIndexBytes {
 			return errors.New("索引容量不足以保存观察证据；已复制媒体仍保留")
 		}
 	}

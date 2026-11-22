@@ -105,7 +105,21 @@ func (c *Catalog) CreateCleanup(ctx context.Context, source media.Source, f medi
 		}
 		budget += int64(len(b))*2 + 4096
 	}
-	if info, err := os.Stat(c.path); err != nil || info.Size()+budget > 512*1024*1024 {
+	info, err := os.Stat(c.path)
+	if err != nil {
+		return job, errors.New("无法读取索引容量")
+	}
+	var pageSize, freePages int64
+	if err = c.db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize); err != nil {
+		return job, err
+	}
+	if err = c.db.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&freePages); err != nil {
+		return job, err
+	}
+	// SQLite reuses free pages without growing the main file. Reserve this
+	// task against occupied pages, retaining the same total capacity budget.
+	reusable := min(info.Size(), pageSize*freePages)
+	if info.Size()-reusable+budget > maxIndexBytes {
 		return job, errors.New("索引没有足够容量记录本次删除，请缩小范围")
 	}
 	tx, err := c.db.BeginTx(ctx, nil)

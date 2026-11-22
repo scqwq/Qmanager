@@ -13,6 +13,7 @@ export function errorFeedback(value:unknown):Feedback {
  else if(/导出父目录.*分开/.test(text)){title='请选择独立的导出位置';advice='导出目录须与 QQ 数据目录和 Qman 应用数据分开。'}
  else if(/退出\s*QQ|QQ.*(运行|进程|退出)/.test(text)){title='请先确认 QQ 已退出';advice='手动完全退出 QQ 后重新检查；无法确认进程状态时，不会执行源文件操作。'}
  else if(/重叠|备份.*与.*分开|保存.*与.*分开/.test(text)){title='请换一个备份保存位置';advice='备份位置须与 QQ 数据目录、Qman 应用数据和已有来源分开。'}
+ else if(/^索引容量已超过 \d+ GiB$/.test(text)){title=text;advice='先备份应用记录，再维护索引。'}
  else if(/索引.*(容量|空间).*(不足|上限)|索引容量/.test(text)){title='应用记录空间不足';advice='先在设置中备份应用记录，再维护索引；不要直接删除数据库。'}
  else if(/空间不足|容量不足|not enough space|disk.*full/i.test(text)){title='保存位置的空间不足';advice='请选择空间足够的保存目录，再重新开始。'}
  else if(/不支持.*(备份|格式|版本)|格式.*不受支持|不受支持.*版本/.test(text)){title='暂不支持这份备份的格式';advice='请选择当前版本支持的完整备份；不会自动修改原备份。'}

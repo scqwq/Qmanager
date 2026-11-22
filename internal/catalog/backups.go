@@ -182,7 +182,7 @@ func (c *Catalog) SaveBackup(row BackupRecord) error {
 		return err
 	}
 	if err != nil {
-		if info, e := os.Stat(c.path); e == nil && info.Size()+int64(len(row.Manifest))*2 > 512*1024*1024 {
+		if info, e := os.Stat(c.path); e == nil && info.Size()+int64(len(row.Manifest))*2 > maxIndexBytes {
 			return errors.New("索引容量不足以登记此备份，请先备份并维护索引")
 		}
 		var n int
@@ -266,7 +266,7 @@ func (c *Catalog) SaveImport(id string, payload []byte) error {
 	if len(payload) > 192*1024*1024 {
 		return errors.New("加载结果超过容量上限")
 	}
-	if info, e := os.Stat(c.path); e == nil && info.Size()+int64(len(payload)) > 512*1024*1024 {
+	if info, e := os.Stat(c.path); e == nil && info.Size()+int64(len(payload)) > maxIndexBytes {
 		return errors.New("索引容量不足以保存加载记录；已复制媒体仍保留")
 	}
 	_, err := c.db.Exec("INSERT INTO backup_imports VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", id, string(payload))
